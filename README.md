@@ -1,8 +1,8 @@
 # Network logger
-Simple network traffic capture utility that relies on gopacket.
+Simple network traffic capture utility that relies on gopacket/libpcap.
 
 ## Goal
-Create [Graphviz](http://www.graphviz.org "Graphviz") network traffic visualizations using some BPF filters. 
+Create [Graphviz](http://www.graphviz.org "Graphviz") network traffic visualizations using [BPF filters](http://biot.com/capstats/bpf.html). 
 
 ## Usage
 Run: `go build` in the current directory, then execute the program using a BPF as a first argument. 
