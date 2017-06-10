@@ -42,7 +42,7 @@ func main() {
 	}
 	doubleShapeOutput += "\n"
 
-	fmt.Printf("digraph interface_capture { \n\t rankdir=LR; \n\t size=\"66\" \n\t %v \"%v\"; \n\t node [shape = circle]; \n", doubleShapeOutput, dev.Addresses[1].IP.String())
+	fmt.Printf("digraph interface_capture { \n\t rankdir=LR; \n\t size=\"10\" \n\t %v \"%v\"; \n\t node [shape = circle]; \n", doubleShapeOutput, dev.Addresses[1].IP.String())
 
 	var ips []string
 
