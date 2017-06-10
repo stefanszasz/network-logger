@@ -5,8 +5,8 @@ Simple network traffic capture utility that relies on gopacket/libpcap.
 Create [Graphviz](http://www.graphviz.org "Graphviz") network traffic visualizations using [BPF filters](http://biot.com/capstats/bpf.html). 
 
 ## Usage
-Run: `go build` in the current directory, then execute the program using a BPF as a first argument. 
-For example: start `sudo ./network-logger "tcp and udp" > output.data`. This will start to capture tcp & udp traffic and will output this to a file using graphviz *dot*-syntax based output that you can use to visualise network traffic using Graphviz tools.
+Run: `go build` in the current directory, then execute the program using a BPF as a first argument - it will ask for `sudo` privileges.
+For example: start `sudo ./network-logger "tcp and udp" > output.data`; you can use `Ctrl (or Cmd) + C` to stop after few seconds (5 or more); this will start to capture **tcp** and **udp** traffic and will output this to a file using graphviz *dot*-syntax based output that you can use to visualise network traffic using Graphviz tools.
 
 Output should look like this:
 
