@@ -2,15 +2,18 @@ package main
 
 import (
 	"fmt"
-	"github.com/google/gopacket"
-	"github.com/google/gopacket/layers"
-	"github.com/google/gopacket/pcap"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
+	"github.com/google/gopacket/pcap"
 )
+
+var packetSources []string
 
 func main() {
 	devices, err := pcap.FindAllDevs()
@@ -31,52 +34,56 @@ func main() {
 	}
 
 	defer handle.Close()
-	handleTermination()
+
+	formatter := &GraphVizFormatter{}
+
+	handleTermination(formatter)
 
 	handle.SetBPFFilter(bpfFilter)
 
-	doubleShapeOutput := "node [shape = doublecircle]; "
-
-	for _, addr := range dev.Addresses {
-		doubleShapeOutput += fmt.Sprintf("\"%v\";", addr.IP)
-	}
-	doubleShapeOutput += "\n"
-
-	fmt.Printf("digraph interface_capture { \n\t rankdir=LR; \n\t size=\"10\" \n\t %v \"%v\"; \n\t node [shape = circle]; \n", doubleShapeOutput, dev.Addresses[1].IP.String())
-
 	var ips []string
+	for _, addr := range dev.Addresses {
+		ips = append(ips, addr.IP.String())
+	}
+
+	doubleShapeOutput := formatter.Header(ips)
+
+	fmt.Printf(doubleShapeOutput)
 
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	for packet := range packetSource.Packets() {
 		tcpLayer := packet.Layer(layers.LayerTypeTCP)
 		if tcpLayer != nil {
 			tcp, _ := tcpLayer.(*layers.TCP)
-			ipLayer := packet.Layer(layers.LayerTypeIPv4)
-			if ipLayer != nil {
-				ip := ipLayer.(*layers.IPv4)
-				if ip != nil {
-					srcDst := ip.SrcIP.String() + ip.DstIP.String()
+			parseIPLayer(packet, tcp.DstPort.String(), formatter)
+		}
+	}
+}
 
-					if contains(ips, srcDst) == false {
-						//fmt.Printf("\"%v:%v\" -> \"%v:%v\";\n", ip.SrcIP.String(), tcp.SrcPort.String(), ip.DstIP.String(), tcp.DstPort.String())
-						fmt.Printf("\t \"%v\" -> \"%v\" [ label = \"%v\" ];\n", ip.SrcIP.String(), ip.DstIP.String(), tcp.DstPort.String())
-						ips = append(ips, srcDst)
-					}
-				}
+func parseIPLayer(packet gopacket.Packet, dstPort string, formatter OutputFormatter) {
+	ipLayer := packet.Layer(layers.LayerTypeIPv4)
+	if ipLayer != nil {
+		ip := ipLayer.(*layers.IPv4)
+		if ip != nil {
+			srcDst := ip.SrcIP.String() + ip.DstIP.String()
+
+			if contains(packetSources, srcDst) == false {
+				entry := &PacketEntry{DestinationPort: dstPort, DestinationIP: ip.DstIP.String(), SourceIp: ip.SrcIP.String()}
+				fmt.Printf(formatter.Entry(entry))
+				packetSources = append(packetSources, srcDst)
 			}
 		}
 	}
 }
 
-func handleTermination() {
+func handleTermination(formatter OutputFormatter) {
 	c := make(chan os.Signal, 2)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-c
-		fmt.Println("}")
+		fmt.Printf(formatter.Footer())
 		os.Exit(0)
 	}()
-
 }
 
 func contains(s []string, e string) bool {
