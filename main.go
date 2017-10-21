@@ -61,10 +61,7 @@ func main() {
 	for packet := range packetSource.Packets() {
 		tcpLayer := packet.Layer(layers.LayerTypeTCP)
 		if tcpLayer != nil {
-			tcp, succ := tcpLayer.(*layers.TCP)
-			if !succ {
-				continue
-			}
+			tcp, _ := tcpLayer.(*layers.TCP)
 			parseIPLayer(packet, tcp.DstPort.String(), formatter)
 		}
 	}
