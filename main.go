@@ -8,14 +8,21 @@ import (
 	"syscall"
 	"time"
 
+	"sync"
+
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 )
 
-var packetSources []string
+type packetHolder struct {
+	packetSources []string
+	sync.Mutex
+}
 
+var pack packetHolder
 func main() {
+	pack = packetHolder{}
 	devices, err := pcap.FindAllDevs()
 	if err != nil {
 		log.Fatal(err)
@@ -54,7 +61,10 @@ func main() {
 	for packet := range packetSource.Packets() {
 		tcpLayer := packet.Layer(layers.LayerTypeTCP)
 		if tcpLayer != nil {
-			tcp, _ := tcpLayer.(*layers.TCP)
+			tcp, succ := tcpLayer.(*layers.TCP)
+			if !succ {
+				continue
+			}
 			parseIPLayer(packet, tcp.DstPort.String(), formatter)
 		}
 	}
@@ -66,11 +76,12 @@ func parseIPLayer(packet gopacket.Packet, dstPort string, formatter OutputFormat
 		ip := ipLayer.(*layers.IPv4)
 		if ip != nil {
 			srcDst := ip.SrcIP.String() + ip.DstIP.String()
-
-			if contains(packetSources, srcDst) == false {
+			pack.Lock()
+			defer pack.Unlock()
+			if contains(pack.packetSources, srcDst) == false {
 				entry := &PacketEntry{DestinationPort: dstPort, DestinationIP: ip.DstIP.String(), SourceIp: ip.SrcIP.String()}
 				fmt.Printf(formatter.Entry(entry))
-				packetSources = append(packetSources, srcDst)
+				pack.packetSources = append(pack.packetSources, srcDst)
 			}
 		}
 	}

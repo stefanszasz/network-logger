@@ -2,9 +2,7 @@ package main
 
 import "fmt"
 
-type CsvFormatter struct {
-
-}
+type CsvFormatter struct {}
 
 func (formatter CsvFormatter) Header(ips []string) string {
 	return ""

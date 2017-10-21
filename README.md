@@ -28,4 +28,4 @@ Output should look like this:
 
 Having this output, one can visualize the graph using local or remote graphviz tools such as [Webgraphviz](http://www.webgraphviz.com/ "Webgraphviz") - on this page, you can paste the contents of your output and click *Generate Graph!*:
 
-<img src="https://raw.githubusercontent.com/stefanszasz/network-logger/master/network-log-1.png" width="300" />
+<img src="https://raw.githubusercontent.com/stefanszasz/network-logger/master/assets/network-log-1.png" width="300" />
