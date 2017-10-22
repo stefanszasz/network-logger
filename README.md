@@ -11,4 +11,4 @@ For example: start `sudo --filter="tcp port 443"
                          --dev=en0`; you can use `Ctrl + C` to stop after few seconds which will cause the `generated.json` file to be created or overwritten.
 
 
-<img src="https://raw.githubusercontent.com/stefanszasz/network-logger/master/assets/vizceral-1.png" width="300" />
+<img src="https://raw.githubusercontent.com/stefanszasz/network-logger/master/assets/vizceral-1.png" width="500" />
