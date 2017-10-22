@@ -13,7 +13,7 @@ func (formatter GraphVizFormatter) Header(ips []string) string {
 	}
 	header += "\n"
 
-	fmt.Printf("digraph interface_capture { \n\t rankdir=LR; \n\t size=\"10\" \n\t %v \"%v\"; \n\t node [shape = circle]; \n", header, ips[1])
+	fmt.Printf("digraph interface_capture { \n\t rankdir=LR; \n\t size=\"10\" \n\t %v \"%v\"; \n\t node [shape = circle]; \n", header, ips[0])
 
 	return header
 }

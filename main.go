@@ -1,26 +1,39 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"sync"
+	"io/ioutil"
+	"os/exec"
+
+	"flag"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 )
 
-type packetHolder struct {
-	packetSources []string
-	sync.Mutex
+var pack packetHolder
+var vGraph VizceralNode
+var localIp, bpfFilter, outputFile string
+
+const (
+	internet     = "INTERNET"
+	focusedChild = "focusedChild"
+	normal       = "normal"
+	region       = "region"
+)
+
+func init() {
+	flag.StringVar(&bpfFilter, "filter", "tcp", "filter=\"tcp and udp\"")
+	flag.StringVar(&outputFile, "out", "/tmp/generated.json", "out=/path/to/file.json")
+	flag.Parse()
 }
 
-var pack packetHolder
 func main() {
 	pack = packetHolder{}
 	devices, err := pcap.FindAllDevs()
@@ -32,7 +45,7 @@ func main() {
 		log.Fatal("BPF filter must be specified as first argument. Eg: sudo ./network-logger \"tcp and udp\"")
 	}
 
-	bpfFilter := os.Args[1]
+	bpfFilter = os.Args[1]
 
 	dev := devices[0]
 	handle, err := pcap.OpenLive(dev.Name, int32(65535), false, time.Second*-1)
@@ -42,32 +55,32 @@ func main() {
 
 	defer handle.Close()
 
-	formatter := &GraphVizFormatter{}
-
-	handleTermination(formatter)
+	handleTermination()
 
 	handle.SetBPFFilter(bpfFilter)
 
 	var ips []string
 	for _, addr := range dev.Addresses {
+		if len(addr.IP) > 4 {
+			continue
+		}
 		ips = append(ips, addr.IP.String())
 	}
 
-	doubleShapeOutput := formatter.Header(ips)
+	localIp = ips[0]
 
-	fmt.Printf(doubleShapeOutput)
+	vGraph = MakeVizceralNode(localIp)
 
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	for packet := range packetSource.Packets() {
 		tcpLayer := packet.Layer(layers.LayerTypeTCP)
 		if tcpLayer != nil {
-			tcp, _ := tcpLayer.(*layers.TCP)
-			parseIPLayer(packet, tcp.DstPort.String(), formatter)
+			parseIPLayer(packet, &vGraph.Nodes[1])
 		}
 	}
 }
 
-func parseIPLayer(packet gopacket.Packet, dstPort string, formatter OutputFormatter) {
+func parseIPLayer(packet gopacket.Packet, vn *VizceralNode) {
 	ipLayer := packet.Layer(layers.LayerTypeIPv4)
 	if ipLayer != nil {
 		ip := ipLayer.(*layers.IPv4)
@@ -76,20 +89,58 @@ func parseIPLayer(packet gopacket.Packet, dstPort string, formatter OutputFormat
 			pack.Lock()
 			defer pack.Unlock()
 			if contains(pack.packetSources, srcDst) == false {
-				entry := &PacketEntry{DestinationPort: dstPort, DestinationIP: ip.DstIP.String(), SourceIp: ip.SrcIP.String()}
-				fmt.Printf(formatter.Entry(entry))
+				srcIp := ip.SrcIP.String()
+				dstIp := ip.DstIP.String()
+
+				if srcIp != localIp && dstIp == localIp {
+					srcIp = localIp
+					dstIp = ip.SrcIP.String()
+				}
+
+				if srcIp == localIp {
+					srcIp = "local"
+				}
+
+				srcNode := VizceralNode{
+					Name:     srcIp,
+					Renderer: focusedChild,
+					Class:    normal,
+				}
+
+				dstNode := VizceralNode{
+					Name:     dstIp,
+					Renderer: focusedChild,
+					Class:    normal,
+				}
+
+				vn.Nodes = append(vn.Nodes, srcNode, dstNode)
+				newConnection := VizceralConnection{
+					Source: srcNode.Name,
+					Target: dstNode.Name,
+					Class:  normal,
+					Metrics: &VizceralMetric{
+						Normal: 100,
+						Danger: 20,
+					},
+				}
+				vn.Connections = append(vn.Connections, newConnection)
 				pack.packetSources = append(pack.packetSources, srcDst)
+
+				log.Println("Added node")
 			}
 		}
 	}
 }
 
-func handleTermination(formatter OutputFormatter) {
+func handleTermination() {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-c
-		fmt.Printf(formatter.Footer())
+		jsonResult := vGraph.String()
+		log.Println(jsonResult)
+
+		trySavingToFile(jsonResult)
 		os.Exit(0)
 	}()
 }
@@ -101,4 +152,15 @@ func contains(s []string, e string) bool {
 		}
 	}
 	return false
+}
+
+func trySavingToFile(jsonResult string) {
+	if outputFile != "" {
+		ioutil.WriteFile(outputFile, []byte(jsonResult), 0666)
+		cmd := exec.Command("chown", "stefanszasz", outputFile)
+		_, err := cmd.Output()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
 }
