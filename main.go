@@ -12,6 +12,8 @@ import (
 
 	"flag"
 
+	"fmt"
+
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
@@ -19,7 +21,7 @@ import (
 
 var pack packetHolder
 var vGraph VizceralNode
-var localIp, bpfFilter, outputFile string
+var localIp, bpfFilter, outputFile, devName string
 
 const (
 	internet     = "INTERNET"
@@ -31,11 +33,13 @@ const (
 func init() {
 	flag.StringVar(&bpfFilter, "filter", "tcp", "filter=\"tcp and udp\"")
 	flag.StringVar(&outputFile, "out", "/tmp/generated.json", "out=/path/to/file.json")
+	flag.StringVar(&devName, "dev", "", "dev=en0")
+
 	flag.Parse()
 }
 
 func main() {
-	pack = packetHolder{}
+	var dev pcap.Interface
 	devices, err := pcap.FindAllDevs()
 	if err != nil {
 		log.Fatal(err)
@@ -45,9 +49,18 @@ func main() {
 		log.Fatal("BPF filter must be specified as first argument. Eg: sudo ./network-logger \"tcp and udp\"")
 	}
 
-	bpfFilter = os.Args[1]
+	if devName == "" {
+		dev = devices[0]
+		devName = dev.Name
+	} else {
+		for _, d := range devices {
+			if d.Name == devName {
+				dev = d
+				break
+			}
+		}
+	}
 
-	dev := devices[0]
 	handle, err := pcap.OpenLive(dev.Name, int32(65535), false, time.Second*-1)
 	if err != nil {
 		log.Fatal(err)
@@ -61,7 +74,7 @@ func main() {
 
 	var ips []string
 	for _, addr := range dev.Addresses {
-		if len(addr.IP) > 4 {
+		if len(addr.IP) > 4 { //we don't use IPv6 yet
 			continue
 		}
 		ips = append(ips, addr.IP.String())
@@ -69,7 +82,7 @@ func main() {
 
 	localIp = ips[0]
 
-	vGraph = MakeVizceralNode(localIp)
+	vGraph = MakeRootVizceralNode(localIp)
 
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	for packet := range packetSource.Packets() {
@@ -126,7 +139,7 @@ func parseIPLayer(packet gopacket.Packet, vn *VizceralNode) {
 				vn.Connections = append(vn.Connections, newConnection)
 				pack.packetSources = append(pack.packetSources, srcDst)
 
-				log.Println("Added node")
+				fmt.Println("Added node")
 			}
 		}
 	}
@@ -156,11 +169,13 @@ func contains(s []string, e string) bool {
 
 func trySavingToFile(jsonResult string) {
 	if outputFile != "" {
+		fmt.Println("Saving to file")
 		ioutil.WriteFile(outputFile, []byte(jsonResult), 0666)
 		cmd := exec.Command("chown", "stefanszasz", outputFile)
 		_, err := cmd.Output()
 		if err != nil {
-			log.Fatal(err)
+			log.Fatal("Error when saving to file: " + err.Error())
 		}
+		fmt.Println("Saved to: " + outputFile)
 	}
 }
