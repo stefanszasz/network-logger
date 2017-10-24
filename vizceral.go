@@ -23,8 +23,8 @@ type (
 	}
 
 	VizceralMetric struct {
-		Normal int `json:"normal"`
-		Danger int `json:"danger"`
+		Normal float64 `json:"normal"`
+		Danger int     `json:"danger"`
 	}
 )
 

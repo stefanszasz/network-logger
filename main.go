@@ -19,9 +19,15 @@ import (
 	"github.com/google/gopacket/pcap"
 )
 
-var pack packetHolder
-var vGraph VizceralNode
-var localIp, bpfFilter, outputFile, devName string
+var (
+	ethLayer                                          layers.Ethernet
+	iPv4                                              layers.IPv4
+	tcpLayer                                          layers.TCP
+	pack                                              packetHolder
+	vGraph                                            VizceralNode
+	localIp, bpfFilter, outputFile, devName, hostName string
+	packetTimeMap                                     map[string][]time.Time
+)
 
 const (
 	internet     = "INTERNET"
@@ -36,10 +42,12 @@ func init() {
 	flag.StringVar(&devName, "dev", "", "dev=en0")
 
 	flag.Parse()
+	hostName = getSimpleHostname()
 }
 
 func main() {
 	var dev pcap.Interface
+	packetTimeMap = make(map[string][]time.Time)
 	devices, err := pcap.FindAllDevs()
 	if err != nil {
 		log.Fatal(err)
@@ -82,7 +90,7 @@ func main() {
 
 	localIp = ips[0]
 
-	vGraph = MakeRootVizceralNode(localIp)
+	vGraph = MakeRootVizceralNode(hostName)
 
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	for packet := range packetSource.Packets() {
@@ -99,21 +107,44 @@ func parseIPLayer(packet gopacket.Packet, vn *VizceralNode) {
 		ip := ipLayer.(*layers.IPv4)
 		if ip != nil {
 			srcDst := ip.SrcIP.String() + ip.DstIP.String()
-			pack.Lock()
-			defer pack.Unlock()
-			if contains(pack.packetSources, srcDst) == false {
-				srcIp := ip.SrcIP.String()
-				dstIp := ip.DstIP.String()
 
-				if srcIp != localIp && dstIp == localIp {
-					srcIp = localIp
-					dstIp = ip.SrcIP.String()
+			srcIp := ip.SrcIP.String()
+			dstIp := ip.DstIP.String()
+
+			if srcIp != localIp && dstIp == localIp {
+				srcIp = localIp
+				dstIp = ip.SrcIP.String()
+			}
+
+			if srcIp == localIp {
+				srcIp = hostName
+			}
+
+			srcDst = srcIp + dstIp
+
+			parser := gopacket.NewDecodingLayerParser(
+				layers.LayerTypeEthernet,
+				&ethLayer,
+				&iPv4,
+				&tcpLayer,
+			)
+			foundLayerTypes := []gopacket.LayerType{}
+
+			_ = parser.DecodeLayers(packet.Data(), &foundLayerTypes)
+
+			for _, layerType := range foundLayerTypes {
+				if layerType == layers.LayerTypeTCP {
+					if tcpLayer.SYN && tcpLayer.ACK {
+						log.Println("SYN + ACK")
+					}
 				}
+			}
 
-				if srcIp == localIp {
-					srcIp = "local"
-				}
+			packetNewRemote := len(packetTimeMap[srcDst]) == 0
+			srcDstCount := 1.0
+			packetTimeMap[srcDst] = append(packetTimeMap[srcDst], time.Now())
 
+			if packetNewRemote {
 				srcNode := VizceralNode{
 					Name:     srcIp,
 					Renderer: focusedChild,
@@ -132,14 +163,15 @@ func parseIPLayer(packet gopacket.Packet, vn *VizceralNode) {
 					Target: dstNode.Name,
 					Class:  normal,
 					Metrics: &VizceralMetric{
-						Normal: 100,
-						Danger: 20,
+						Normal: srcDstCount,
+						Danger: 0,
 					},
 				}
+
 				vn.Connections = append(vn.Connections, newConnection)
 				pack.packetSources = append(pack.packetSources, srcDst)
 
-				fmt.Println("Added node")
+				log.Println("Added node")
 			}
 		}
 	}
@@ -150,21 +182,31 @@ func handleTermination() {
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-c
+		vGraph.Nodes[1].Name = hostName
+
+		connections := vGraph.Nodes[1].Connections
+
+		for _, con := range connections {
+			conKey := con.Source + con.Target
+			timeSlices := packetTimeMap[conKey]
+			if len(timeSlices) > 1 {
+				timeFrames := packetTimeMap[conKey]
+				sFrame := timeFrames[0]
+				eFrame := timeFrames[len(timeFrames)-1]
+				secondsDiff := eFrame.Sub(sFrame).Seconds()
+
+				packPerSec := float64(len(packetTimeMap[conKey])) / secondsDiff
+				con.Metrics.Normal = packPerSec
+				log.Printf("RPS: %.2f", packPerSec)
+			}
+		}
+
 		jsonResult := vGraph.String()
 		log.Println(jsonResult)
 
 		trySavingToFile(jsonResult)
 		os.Exit(0)
 	}()
-}
-
-func contains(s []string, e string) bool {
-	for _, a := range s {
-		if a == e {
-			return true
-		}
-	}
-	return false
 }
 
 func trySavingToFile(jsonResult string) {
@@ -178,4 +220,13 @@ func trySavingToFile(jsonResult string) {
 		}
 		fmt.Println("Saved to: " + outputFile)
 	}
+}
+
+func getSimpleHostname() string {
+	h, err := os.Hostname()
+	if err == nil {
+		return h
+	}
+
+	return "local"
 }
