@@ -20,14 +20,20 @@ import (
 )
 
 var (
-	ethLayer                                          layers.Ethernet
-	iPv4                                              layers.IPv4
-	tcpLayer                                          layers.TCP
-	pack                                              packetHolder
-	vGraph                                            VizceralNode
-	localIp, bpfFilter, outputFile, devName, hostName string
-	packetTimeMap                                     map[string][]time.Time
+	ethLayer                       layers.Ethernet
+	iPv4                           layers.IPv4
+	tcpLayer                       layers.TCP
+	pack                           packetHolder
+	vGraph                         VizceralNode
+	localIp, bpfFilter, outputFile string
+	devName, hostName, fileOwner   string
+	packetTimeMap                  map[string]packetCounter
 )
+
+type packetCounter struct {
+	count      int
+	start, end time.Time
+}
 
 const (
 	internet     = "INTERNET"
@@ -40,14 +46,20 @@ func init() {
 	flag.StringVar(&bpfFilter, "filter", "tcp", "filter=\"tcp and udp\"")
 	flag.StringVar(&outputFile, "out", "/tmp/generated.json", "out=/path/to/file.json")
 	flag.StringVar(&devName, "dev", "", "dev=en0")
+	flag.StringVar(&fileOwner, "fileowner", "", "fileowner=username")
 
 	flag.Parse()
+
+	if fileOwner == "" {
+		log.Fatal("--fileowner argument must be set")
+	}
+
 	hostName = getSimpleHostname()
 }
 
 func main() {
 	var dev pcap.Interface
-	packetTimeMap = make(map[string][]time.Time)
+	packetTimeMap = make(map[string]packetCounter)
 	devices, err := pcap.FindAllDevs()
 	if err != nil {
 		log.Fatal(err)
@@ -122,6 +134,10 @@ func parseIPLayer(packet gopacket.Packet, vn *VizceralNode) {
 
 			srcDst = srcIp + dstIp
 
+			p := packetTimeMap[srcDst]
+			newRemotePacket := p.count == 0
+			p.count++
+
 			parser := gopacket.NewDecodingLayerParser(
 				layers.LayerTypeEthernet,
 				&ethLayer,
@@ -140,11 +156,8 @@ func parseIPLayer(packet gopacket.Packet, vn *VizceralNode) {
 				}
 			}
 
-			packetNewRemote := len(packetTimeMap[srcDst]) == 0
-			srcDstCount := 1.0
-			packetTimeMap[srcDst] = append(packetTimeMap[srcDst], time.Now())
-
-			if packetNewRemote {
+			if newRemotePacket {
+				p.start = time.Now()
 				srcNode := VizceralNode{
 					Name:     srcIp,
 					Renderer: focusedChild,
@@ -163,7 +176,7 @@ func parseIPLayer(packet gopacket.Packet, vn *VizceralNode) {
 					Target: dstNode.Name,
 					Class:  normal,
 					Metrics: &VizceralMetric{
-						Normal: srcDstCount,
+						Normal: 1,
 						Danger: 0,
 					},
 				}
@@ -173,6 +186,9 @@ func parseIPLayer(packet gopacket.Packet, vn *VizceralNode) {
 
 				log.Println("Added node")
 			}
+
+			p.end = time.Now()
+			packetTimeMap[srcDst] = p
 		}
 	}
 }
@@ -189,15 +205,13 @@ func handleTermination() {
 		for _, con := range connections {
 			conKey := con.Source + con.Target
 			timeSlices := packetTimeMap[conKey]
-			if len(timeSlices) > 1 {
+			if timeSlices.count > 1 {
 				timeFrames := packetTimeMap[conKey]
-				sFrame := timeFrames[0]
-				eFrame := timeFrames[len(timeFrames)-1]
-				secondsDiff := eFrame.Sub(sFrame).Seconds()
+				secondsDiff := timeFrames.end.Sub(timeFrames.start).Seconds()
 
-				packPerSec := float64(len(packetTimeMap[conKey])) / secondsDiff
+				packPerSec := float64(timeFrames.count) / secondsDiff
 				con.Metrics.Normal = packPerSec
-				log.Printf("RPS: %.2f", packPerSec)
+				log.Printf("Packets / sec: %.2f", packPerSec)
 			}
 		}
 
@@ -212,11 +226,14 @@ func handleTermination() {
 func trySavingToFile(jsonResult string) {
 	if outputFile != "" {
 		fmt.Println("Saving to file")
-		ioutil.WriteFile(outputFile, []byte(jsonResult), 0666)
-		cmd := exec.Command("chown", "stefanszasz", outputFile)
-		_, err := cmd.Output()
+		err := ioutil.WriteFile(outputFile, []byte(jsonResult), 0666)
 		if err != nil {
-			log.Fatal("Error when saving to file: " + err.Error())
+			log.Fatal("Cannot save file: ", err)
+		}
+		cmd := exec.Command("chown", fileOwner, outputFile)
+		_, err = cmd.Output()
+		if err != nil {
+			log.Fatal("Cannot change owner: " + err.Error())
 		}
 		fmt.Println("Saved to: " + outputFile)
 	}
