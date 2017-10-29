@@ -28,11 +28,13 @@ var (
 	localIp, bpfFilter, outputFile string
 	devName, hostName, fileOwner   string
 	packetTimeMap                  map[string]packetCounter
+	retransmits                    map[uint32]bool
 )
 
 type packetCounter struct {
 	count      int
 	start, end time.Time
+	err        int
 }
 
 const (
@@ -59,6 +61,7 @@ func init() {
 
 func main() {
 	var dev pcap.Interface
+	retransmits = make(map[uint32]bool)
 	packetTimeMap = make(map[string]packetCounter)
 	devices, err := pcap.FindAllDevs()
 	if err != nil {
@@ -153,6 +156,11 @@ func parseIPLayer(packet gopacket.Packet, vn *VizceralNode) {
 					if tcpLayer.SYN && tcpLayer.ACK {
 						log.Println("SYN + ACK")
 					}
+					ok := retransmits[tcpLayer.Seq]
+					if ok {
+						log.Println("RETRANSMIT")
+						p.err++
+					}
 				}
 			}
 
@@ -204,13 +212,14 @@ func handleTermination() {
 
 		for _, con := range connections {
 			conKey := con.Source + con.Target
-			timeSlices := packetTimeMap[conKey]
-			if timeSlices.count > 1 {
+			timeSlice := packetTimeMap[conKey]
+			if timeSlice.count > 1 {
 				timeFrames := packetTimeMap[conKey]
 				secondsDiff := timeFrames.end.Sub(timeFrames.start).Seconds()
 
 				packPerSec := float64(timeFrames.count) / secondsDiff
 				con.Metrics.Normal = packPerSec
+				con.Metrics.Danger = timeSlice.err
 				log.Printf("Packets / sec: %.2f", packPerSec)
 			}
 		}
