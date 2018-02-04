@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"stefanszasz/network-logger/caps"
+)
 
 type CsvFormatter struct{}
 
@@ -12,7 +15,7 @@ func (formatter CsvFormatter) Footer() string {
 	return ""
 }
 
-func (formatter CsvFormatter) Entry(row *PacketEntry) string {
+func (formatter CsvFormatter) Entry(row *caps.PacketEntry) string {
 	srcIp := row.SourceIp
 	dstIp := row.DestinationIP
 

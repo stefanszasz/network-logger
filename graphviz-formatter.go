@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"stefanszasz/network-logger/caps"
 )
 
 type GraphVizFormatter struct{}
@@ -22,7 +23,7 @@ func (formatter GraphVizFormatter) Footer() string {
 	return "}\n"
 }
 
-func (formatter GraphVizFormatter) Entry(row *PacketEntry) string {
+func (formatter GraphVizFormatter) Entry(row *caps.PacketEntry) string {
 	srcIp := row.SourceIp
 	dstIp := row.DestinationIP
 

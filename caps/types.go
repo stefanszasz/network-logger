@@ -1,11 +1,39 @@
-package main
+package caps
 
 import (
 	"encoding/json"
 	"log"
+	"sync"
+)
+
+const (
+	internet     = "INTERNET"
+	focusedChild = "focusedChild"
+	normal       = "normal"
+	region       = "region"
 )
 
 type (
+	PacketEntry struct {
+		SourceIp, SourcePort           string
+		DestinationIP, DestinationPort string
+	}
+
+	OutputFormatter interface {
+		Header(ips []string) string
+		Entry(row *PacketEntry) string
+		Footer() string
+	}
+
+	Capturer interface {
+		StartCapture(in chan VizceralNode) (interface{}, error)
+	}
+
+	packetHolder struct {
+		packetSources []string
+		sync.Mutex
+	}
+
 	VizceralNode struct {
 		Renderer    string               `json:"renderer"`
 		Name        string               `json:"name"`
@@ -36,8 +64,8 @@ func (self VizceralNode) String() string {
 	return string(marshal)
 }
 
-func MakeRootVizceralNode(root string) VizceralNode {
-	return VizceralNode{
+func MakeRootVizceralNode(root string) *VizceralNode {
+	return &VizceralNode{
 		Renderer: "global",
 		Name:     "edge",
 		Nodes: []VizceralNode{
