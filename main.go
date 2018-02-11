@@ -17,7 +17,7 @@ import (
 
 var (
 	localIp, bpfFilter, outputFile string
-	awsProfile, instanceId, region string
+	awsProfile, instanceId         string
 	devName, hostName, fileOwner   string
 	capRes                         caps.BPFCaptureResult
 	ch                             chan caps.VizceralNode
@@ -31,7 +31,6 @@ func init() {
 
 	flag.StringVar(&awsProfile, "profile", "", "profile=awsprofile")
 	flag.StringVar(&instanceId, "instanceId", "", "instanceId=i-182716171")
-	flag.StringVar(&region, "region", "", "region=us-east-1")
 
 	flag.Parse()
 
@@ -52,7 +51,7 @@ func main() {
 	//	log.Panic(err)
 	//}
 
-	in := caps.VPCFlowLogCapInput{AWSProfile: awsProfile, InstanceId: instanceId, Region: region}
+	in := caps.VPCFlowLogCapInput{AWSProfile: awsProfile, InstanceId: instanceId}
 	c := caps.MakeNewVPCFlowCap(in)
 	r, _ := c.StartCapture()
 	trySavingToFile(r.String())
