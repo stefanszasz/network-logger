@@ -17,6 +17,7 @@ import (
 
 var (
 	localIp, bpfFilter, outputFile string
+	awsProfile, instanceId, region string
 	devName, hostName, fileOwner   string
 	capRes                         caps.BPFCaptureResult
 	ch                             chan caps.VizceralNode
@@ -28,6 +29,10 @@ func init() {
 	flag.StringVar(&devName, "dev", "", "dev=en0")
 	flag.StringVar(&fileOwner, "fileowner", "", "fileowner=username")
 
+	flag.StringVar(&awsProfile, "profile", "", "profile=awsprofile")
+	flag.StringVar(&instanceId, "instanceId", "", "instanceId=i-182716171")
+	flag.StringVar(&region, "region", "", "region=us-east-1")
+
 	flag.Parse()
 
 	if fileOwner == "" {
@@ -36,16 +41,21 @@ func init() {
 }
 
 func main() {
-	handleTermination()
+	//handleTermination()
 
-	in := &caps.BPFCaptureInput{Device: devName, Filter: bpfFilter}
-	bpfCap := caps.MakeNewBPFCapture(in)
+	//in := &caps.BPFCaptureInput{Device: devName, Filter: bpfFilter}
+	//bpfCap := caps.MakeNewBPFCapture(in)
 
-	ch := make(chan caps.VizceralNode)
-	_, err := bpfCap.StartCapture(ch)
-	if err != nil {
-		log.Panic(err)
-	}
+	//ch := make(chan caps.VizceralNode)
+	//_, err := bpfCap.StartCapture(ch)
+	//if err != nil {
+	//	log.Panic(err)
+	//}
+
+	in := caps.VPCFlowLogCapInput{AWSProfile: awsProfile, InstanceId: instanceId, Region: region}
+	c := caps.MakeNewVPCFlowCap(in)
+	r, _ := c.StartCapture()
+	trySavingToFile(r.String())
 }
 
 func handleTermination() {
@@ -67,7 +77,7 @@ func handleTermination() {
 
 				packPerSec := float64(timeFrames.Count) / secondsDiff
 				con.Metrics.Normal = packPerSec
-				con.Metrics.Danger = timeSlice.Err
+				con.Metrics.Danger = float64(timeSlice.Err)
 				log.Printf("Packets / sec: %.2f", packPerSec)
 			}
 		}

@@ -11,6 +11,7 @@ const (
 	focusedChild = "focusedChild"
 	normal       = "normal"
 	region       = "region"
+	name         = "name"
 )
 
 type (
@@ -44,15 +45,23 @@ type (
 	}
 
 	VizceralConnection struct {
-		Source  string          `json:"source"`
-		Target  string          `json:"target"`
-		Class   string          `json:"class"`
-		Metrics *VizceralMetric `json:"metrics"`
+		Source  string           `json:"source"`
+		Target  string           `json:"target"`
+		Class   string           `json:"class"`
+		Metrics *VizceralMetric  `json:"metrics"`
+		Notices []VizceralNotice `json:"notices"`
+		Hash    string
 	}
 
 	VizceralMetric struct {
 		Normal float64 `json:"normal"`
-		Danger int     `json:"danger"`
+		Danger float64 `json:"danger"`
+	}
+
+	VizceralNotice struct {
+		Title    string `json:"title"`
+		Link     string `json:"link"`
+		Severity int    `json:"severity"`
 	}
 )
 
