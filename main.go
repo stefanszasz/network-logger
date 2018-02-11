@@ -4,7 +4,9 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"time"
 
 	"io/ioutil"
 	"os/exec"
@@ -13,6 +15,11 @@ import (
 
 	"fmt"
 	"stefanszasz/network-logger/caps"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/s3"
 )
 
 var (
@@ -54,7 +61,7 @@ func main() {
 	in := caps.VPCFlowLogCapInput{AWSProfile: awsProfile, InstanceId: instanceId}
 	c := caps.MakeNewVPCFlowCap(in)
 	r, _ := c.StartCapture()
-	trySavingToFile(r.String())
+	trySavingOutput(r.String())
 }
 
 func handleTermination() {
@@ -84,23 +91,43 @@ func handleTermination() {
 		jsonResult := vn.String()
 		log.Println(jsonResult)
 
-		trySavingToFile(jsonResult)
+		trySavingOutput(jsonResult)
 		os.Exit(0)
 	}()
 }
 
-func trySavingToFile(jsonResult string) {
+func trySavingOutput(jsonResult string) {
 	if outputFile != "" {
-		fmt.Println("Saving to file")
-		err := ioutil.WriteFile(outputFile, []byte(jsonResult), 0666)
-		if err != nil {
-			log.Fatal("Cannot save file: ", err)
+		fmt.Println("Saving output...")
+		if strings.Contains(outputFile, "s3://") {
+			cfg := &aws.Config{Credentials: credentials.NewSharedCredentials("", awsProfile)}
+			sess, err := session.NewSession(cfg)
+			if err != nil {
+				log.Panic(err)
+			}
+
+			bucketName := os.Getenv("OUT_BUCKET")
+			if bucketName == "" {
+				log.Println("Cannot find which bucket to write to. Exiting")
+				return
+			}
+			s3client := s3.New(sess, cfg)
+			file := instanceId + "-" + time.Now().UTC().String() + ".json"
+			_, err = s3client.CopyObject(&s3.CopyObjectInput{Bucket: &bucketName, Key: &file})
+			if err != nil {
+				log.Println("Cannot copy file to s3: ", err.Error())
+			}
+		} else {
+			err := ioutil.WriteFile(outputFile, []byte(jsonResult), 0666)
+			if err != nil {
+				log.Fatal("Cannot save file: ", err)
+			}
+			cmd := exec.Command("chown", fileOwner, outputFile)
+			_, err = cmd.Output()
+			if err != nil {
+				log.Fatal("Cannot change owner: " + err.Error())
+			}
+			fmt.Println("Saved to: " + outputFile)
 		}
-		cmd := exec.Command("chown", fileOwner, outputFile)
-		_, err = cmd.Output()
-		if err != nil {
-			log.Fatal("Cannot change owner: " + err.Error())
-		}
-		fmt.Println("Saved to: " + outputFile)
 	}
 }
