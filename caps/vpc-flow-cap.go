@@ -91,7 +91,7 @@ func (src VPCFlowLogCap) StartCapture() (*VizceralNode, error) {
 		go func(region string) {
 			defer wg.Done()
 
-			ec2Svc := buildNewEc2Session(src.AWSProfile)
+			ec2Svc := buildNewEc2Session(region, src.AWSProfile)
 			instances, err := ec2Svc.DescribeInstances(&ec2.DescribeInstancesInput{})
 			if err != nil {
 				log.Panic(err)
@@ -145,7 +145,7 @@ func (src VPCFlowLogCap) StartCapture() (*VizceralNode, error) {
 		Values: []*string{&vpcId},
 	}
 
-	ec2Svc := buildNewEc2Session(src.AWSProfile)
+	ec2Svc := buildNewEc2Session("", src.AWSProfile)
 	fl, err := ec2Svc.DescribeFlowLogs(&ec2.DescribeFlowLogsInput{Filter: []*ec2.Filter{f}})
 	if len(fl.FlowLogs) == 0 {
 		log.Println("Cannot find flowlogs")
@@ -305,7 +305,7 @@ func (src VPCFlowLogCap) fillDNSInstanceCache(wg *sync.WaitGroup) {
 	log.Println("Reading DNS entries")
 	defer wg.Done()
 
-	cfg, sess := buildNewAwsConfigSession(src.AWSProfile)
+	cfg, sess := buildNewAwsConfigSession("", src.AWSProfile)
 	r53 := route53.New(sess, cfg)
 
 	zones, _ := r53.ListHostedZones(&route53.ListHostedZonesInput{})
@@ -338,14 +338,17 @@ func getInstanceName(instanceId string) string {
 	return name
 }
 
-func buildNewEc2Session(profile string) *ec2.EC2 {
-	cfg, sess := buildNewAwsConfigSession(profile)
+func buildNewEc2Session(region string, profile string) *ec2.EC2 {
+	cfg, sess := buildNewAwsConfigSession(region, profile)
 	return ec2.New(sess, cfg)
 }
 
-func buildNewAwsConfigSession(profile string) (*aws.Config, *session.Session) {
+func buildNewAwsConfigSession(region string, profile string) (*aws.Config, *session.Session) {
+	if region == "" {
+		region = inRegion
+	}
 	cfg := &aws.Config{
-		Region:      &inRegion,
+		Region:      &region,
 		Credentials: credentials.NewSharedCredentials("", profile),
 	}
 	sess, err := session.NewSession(cfg)
