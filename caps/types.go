@@ -2,6 +2,8 @@ package caps
 
 import (
 	"encoding/json"
+	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"log"
 	"sync"
 )
@@ -63,7 +65,35 @@ type (
 		Link     string `json:"link"`
 		Severity int    `json:"severity"`
 	}
+
+	instanceCacheHolder struct {
+		cache map[string]string
+		sync.Mutex
+	}
+
+	instancesFoundCacheHolder struct {
+		cache EC2Instances
+		sync.Mutex
+	}
+
+	EC2Instance struct {
+		InstanceId, Name, VpcId, Region string
+		Enis                            []string
+	}
+
+	VPCFlowLogCapInput struct {
+		InstanceIds string
+	}
+
+	VPCFlowLogCap struct {
+		ec2Svc        *ec2.EC2
+		InstanceIds   string
+		cloudWatchSvc *cloudwatchlogs.CloudWatchLogs
+		Region        string
+		iCache        instancesFoundCacheHolder
+	}
 )
+type EC2Instances []EC2Instance
 
 func (self VizceralNode) String() string {
 	marshal, err := json.Marshal(self)
@@ -71,6 +101,25 @@ func (self VizceralNode) String() string {
 		log.Fatal(err)
 	}
 	return string(marshal)
+}
+
+func (src EC2Instance) String() string {
+	if src.Name == "" {
+		return src.InstanceId
+	}
+
+	return src.Name
+}
+
+func (src EC2Instances) findBy(f func(in EC2Instance) bool) *EC2Instance {
+	for _, inst := range src {
+		res := f(inst)
+		if res {
+			return &inst
+		}
+	}
+
+	return nil
 }
 
 func MakeRootVizceralNode(root string) *VizceralNode {

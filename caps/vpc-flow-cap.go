@@ -4,7 +4,6 @@ import (
 	"errors"
 	"log"
 	"math"
-	"net"
 	"os"
 	"sort"
 	"strconv"
@@ -12,7 +11,6 @@ import (
 	"sync"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -20,59 +18,27 @@ import (
 	"time"
 )
 
-type instanceCacheHolder struct {
-	cache map[string]string
-	sync.Mutex
-}
-
-type EC2Instance struct {
-	InstanceId, Name, VpcId string
-	Enis                    []string
-}
-
-type EC2Instances []EC2Instance
-
-var instances EC2Instances
-var instanceCache instanceCacheHolder
-var inRegion = "us-east-1" //default region
-
-type VPCFlowLogCap struct {
-	ec2Svc        *ec2.EC2
-	InstanceIds   string
-	cloudWatchSvc *cloudwatchlogs.CloudWatchLogs
-	AWSProfile    string
-	Region        string
-}
-
-type VPCFlowLogCapInput struct {
-	AWSProfile  string
-	InstanceIds string
-}
+var instanceIPNameCache instanceCacheHolder
 
 func MakeNewVPCFlowCap(in VPCFlowLogCapInput) *VPCFlowLogCap {
 	if in.InstanceIds == "" {
 		panic("InstanceId must be set")
 	}
 
-	cfg := &aws.Config{
-		Region:      &inRegion,
-		Credentials: credentials.NewSharedCredentials("", in.AWSProfile),
-	}
+	cfg := &aws.Config{}
 	sess, err := session.NewSession(cfg)
 	if err != nil {
 		log.Panic(err)
 	}
 
-	instanceCache = instanceCacheHolder{cache: make(map[string]string)}
+	instanceIPNameCache = instanceCacheHolder{cache: make(map[string]string)}
 
 	mappings := os.Getenv("KNOWN_IP_MAPPINGS")
 	if mappings != "" {
 		tokens := strings.Split(mappings, ";")
 		for _, t := range tokens {
 			ipName := strings.Split(t, "=")
-			instanceCache.Lock()
-			instanceCache.cache[ipName[0]] = ipName[1]
-			instanceCache.Unlock()
+			instanceIPNameCache.cache[ipName[0]] = ipName[1]
 		}
 	}
 
@@ -80,119 +46,94 @@ func MakeNewVPCFlowCap(in VPCFlowLogCapInput) *VPCFlowLogCap {
 
 	cwLogs := cloudwatchlogs.New(sess, cfg)
 
-	return &VPCFlowLogCap{cloudWatchSvc: cwLogs, InstanceIds: in.InstanceIds, AWSProfile: in.AWSProfile}
+	return &VPCFlowLogCap{cloudWatchSvc: cwLogs, InstanceIds: in.InstanceIds}
 }
 
-func (src VPCFlowLogCap) StartCapture() (*VizceralNode, error) {
+func (src VPCFlowLogCap) StartCapture() ([]*VizceralNode, error) {
 	instanceIdNameMap := make(map[string]string)
 	instanceTokens := strings.Split(src.InstanceIds, ",")
 	for _, tokens := range instanceTokens {
 		instanceIdNameMap[tokens] = ""
 	}
 
-	var vpcId string
-	var netIfaces, ips []string
-
-	regions := strings.Split(os.Getenv("REGIONS"), ",")
-
 	var wg sync.WaitGroup
-	wg.Add(len(regions) + 1)
-
 	go src.fillDNSInstanceCache(&wg)
+	src.fillInstanceCache(&wg)
 
-	log.Println("Starting reading instances...")
-	for _, r := range regions {
-		go func(region string) {
-			defer wg.Done()
+	var foundInstances EC2Instances
+	for _, instId := range instanceTokens {
+		locInst := src.findInstanceFromCache(func(in EC2Instance) bool {
+			return in.InstanceId == instId
+		})
+		if locInst == nil {
+			log.Printf("Counldn't find instance %s. Skipping. \n", instId)
+		}
+		foundInstances = append(foundInstances, *locInst)
+	}
 
-			ec2Svc := buildNewEc2Session(region, src.AWSProfile)
-			instances, err := ec2Svc.DescribeInstances(&ec2.DescribeInstancesInput{})
-			if err != nil {
-				log.Panic(err)
-			}
+	if len(foundInstances) == 0 {
+		return nil, errors.New("couldn't find any instances. Exiting")
+	}
 
-			for _, res := range instances.Reservations {
-				for _, inst := range res.Instances {
-					ip := *inst.PrivateIpAddress
-					nameTag := ""
-					for _, t := range inst.Tags {
-						if strings.ToLower(*t.Key) == name {
-							nameTag = *t.Value
-							instanceCache.Lock()
-							instanceCache.cache[ip] = *t.Value
-							instanceCache.Unlock()
-						}
-					}
+	var rootNodes []*VizceralNode
 
-					if *inst.InstanceId == src.InstanceIds {
-						vpcId = *inst.VpcId
-						az := *inst.Placement.AvailabilityZone
-						inRegion = az[0 : len(az)-1]
-						for _, eni := range inst.NetworkInterfaces {
-							netIfaces = append(netIfaces, *eni.NetworkInterfaceId)
-							ips = append(ips, *eni.PrivateIpAddress)
-						}
+	for _, instance := range foundInstances {
+		gIn, err := src.buildFlowLogInput(&instance)
+		if err != nil {
+			log.Println(err.Error())
+			continue
+		}
 
-						if nameTag != "" {
-							instanceIdNameMap[*inst.InstanceId] = nameTag
-						} else {
-							instanceIdNameMap[*inst.InstanceId] = *inst.NetworkInterfaces[0].PrivateIpAddress
-						}
-					}
+		log.Println("Fetching logs...")
+		eventResponse, err := src.cloudWatchSvc.GetLogEvents(gIn)
+		if err != nil {
+			log.Println(err)
+			return nil, err
+		}
+
+		node := src.buildGraph(&instance, eventResponse.Events)
+		rootNodes = append(rootNodes, node)
+	}
+
+	return rootNodes, nil
+}
+
+func (src VPCFlowLogCap) fillDNSInstanceCache(wg *sync.WaitGroup) {
+	log.Println("Reading DNS entries")
+	wg.Add(1)
+	defer wg.Done()
+
+	cfg, session := buildNewAwsConfigSession("")
+	r53 := route53.New(session, cfg)
+
+	zones, _ := r53.ListHostedZones(&route53.ListHostedZonesInput{})
+	for _, z := range zones.HostedZones {
+		in := &route53.ListResourceRecordSetsInput{HostedZoneId: z.Id}
+		rs, _ := r53.ListResourceRecordSets(in)
+
+		for _, r := range rs.ResourceRecordSets {
+			if *r.Type == "A" {
+				if len(r.ResourceRecords) > 0 {
+					ipVal := strings.TrimSpace(*r.ResourceRecords[0].Value)
+					dName := strings.TrimRight(*r.Name, ".")
+					instanceIPNameCache.Lock()
+					instanceIPNameCache.cache[ipVal] = dName
+					instanceIPNameCache.Unlock()
 				}
 			}
-		}(r)
+		}
 	}
 
-	wg.Wait()
+	log.Println("Finished reading DNS entires")
+}
 
-	log.Println("Got instances")
+func (src VPCFlowLogCap) buildGraph(instance *EC2Instance, events []*cloudwatchlogs.OutputLogEvent) *VizceralNode {
+	sourceDestCache := make(map[string]bool)
 
-	if len(netIfaces) == 0 || len(ips) == 0 {
-		panic("Cannot find enis for instance. Can't happen.")
-	}
-
-	log.Printf("Found instance "+src.InstanceIds+" in VPC "+vpcId+". ENIs: %v. IPs: %v\n", netIfaces, ips)
-
-	f := &ec2.Filter{
-		Name:   aws.String("resource-id"),
-		Values: []*string{&vpcId},
-	}
-
-	ec2Svc := buildNewEc2Session("", src.AWSProfile)
-	fl, err := ec2Svc.DescribeFlowLogs(&ec2.DescribeFlowLogsInput{Filter: []*ec2.Filter{f}})
-	if len(fl.FlowLogs) == 0 {
-		log.Println("Cannot find flowlogs")
-		return nil, errors.New("cannot find flow logs")
-	}
-
-	groupName := fl.FlowLogs[0].LogGroupName
-	logStreams, _ := src.cloudWatchSvc.DescribeLogStreams(&cloudwatchlogs.DescribeLogStreamsInput{LogGroupName: groupName})
-	if len(logStreams.LogStreams) == 0 {
-		log.Println("Cannot find log streams at all")
-		return nil, errors.New("cannot find log streams at all")
-	}
-
-	logStream := netIfaces[0] + "-all"
-	gIn := &cloudwatchlogs.GetLogEventsInput{
-		LogGroupName:  groupName,
-		LogStreamName: &logStream,
-	}
-
-	log.Println("Fetching logs...")
-
-	events, err := src.cloudWatchSvc.GetLogEvents(gIn)
-	if err != nil {
-		log.Println(err)
-		return nil, err
-	}
-
-	resultCache := make(map[string]bool)
-
-	rootNode := MakeRootVizceralNode("Target")
+	rootNode := MakeRootVizceralNode(instance.String())
 	vn := &rootNode.Nodes[1]
 
-	for _, evt := range events.Events {
+	for _, evt := range events {
 		tokens := strings.Split(*evt.Message, " ")
 		srcIp := tokens[3]
 		dstIp := tokens[4]
@@ -202,15 +143,15 @@ func (src VPCFlowLogCap) StartCapture() (*VizceralNode, error) {
 		srcIsPrivateIp, _ := privateIP(srcIp)
 		dstIsPrivateIp, _ := privateIP(dstIp)
 
-		valSrc := getInstanceName(srcIp)
-		valDst := getInstanceName(dstIp)
+		valSrc := src.getInstanceName(srcIp)
+		valDst := src.getInstanceName(dstIp)
 
 		value := "Src: " + valSrc + ". Destination: " + valDst
 		vTokens := strings.Split(value, "")
 		sort.Strings(vTokens)
 		mapHash := strings.Join(vTokens, "")
 
-		_, ok := resultCache[mapHash]
+		_, ok := sourceDestCache[mapHash]
 		if !ok {
 			//startDateStr := tokens[10]
 			endDateStr := tokens[11]
@@ -219,7 +160,7 @@ func (src VPCFlowLogCap) StartCapture() (*VizceralNode, error) {
 			//startDate := time.Unix(int64(sD), 0)
 			//log.Printf("%v", startDate)
 			endDate := time.Unix(int64(eD), 0)
-			resultCache[mapHash] = true
+			sourceDestCache[mapHash] = true
 			//fmt.Println(value)
 
 			if endDate.UTC().Day() != time.Now().UTC().Day() {
@@ -297,14 +238,14 @@ func (src VPCFlowLogCap) StartCapture() (*VizceralNode, error) {
 				},
 			}
 
-			if srcNode.Name == srcIp || dstNode.Name == dstIp {
-				not := VizceralNotice{
-					Link:     "https://some.link",
-					Severity: 1,
-					Title:    "instance missing?",
-				}
-				newConnection.Notices = append(newConnection.Notices, not)
-			}
+			//if srcNode.Name == srcIp || dstNode.Name == dstIp {
+			//	not := VizceralNotice{
+			//		Link:     "https://some.link",
+			//		Severity: 1,
+			//		Title:    "instance missing?",
+			//	}
+			//	newConnection.Notices = append(newConnection.Notices, not)
+			//}
 			vn.Connections = append(vn.Connections, newConnection)
 		} else {
 			for _, con := range vn.Connections {
@@ -320,90 +261,115 @@ func (src VPCFlowLogCap) StartCapture() (*VizceralNode, error) {
 		}
 	}
 
-	return rootNode, nil
+	return rootNode
 }
 
-func (src VPCFlowLogCap) fillDNSInstanceCache(wg *sync.WaitGroup) {
-	log.Println("Reading DNS entries")
-	defer wg.Done()
+func (src *VPCFlowLogCap) fillInstanceCache(wg *sync.WaitGroup) {
+	regions := strings.Split(os.Getenv("REGIONS"), ",")
 
-	cfg, sess := buildNewAwsConfigSession("", src.AWSProfile)
-	r53 := route53.New(sess, cfg)
+	wg.Add(len(regions))
 
-	zones, _ := r53.ListHostedZones(&route53.ListHostedZonesInput{})
-	for _, z := range zones.HostedZones {
-		in := &route53.ListResourceRecordSetsInput{HostedZoneId: z.Id}
-		rs, _ := r53.ListResourceRecordSets(in)
+	for _, r := range regions {
+		go func(region string) {
+			defer wg.Done()
 
-		for _, r := range rs.ResourceRecordSets {
-			if *r.Type == "A" {
-				if len(r.ResourceRecords) > 0 {
-					ipVal := strings.TrimSpace(*r.ResourceRecords[0].Value)
-					dName := strings.TrimRight(*r.Name, ".")
-					instanceCache.Lock()
-					instanceCache.cache[ipVal] = dName
-					instanceCache.Unlock()
+			ec2Svc := buildNewEc2Session(region)
+			instances, err := ec2Svc.DescribeInstances(&ec2.DescribeInstancesInput{})
+			if err != nil {
+				log.Panic(err)
+			}
+
+			for _, res := range instances.Reservations {
+				for _, inst := range res.Instances {
+					ip := *inst.PrivateIpAddress
+					nameTag := ""
+
+					instance := EC2Instance{
+						InstanceId: *inst.InstanceId,
+						VpcId:      *inst.VpcId,
+					}
+
+					for _, t := range inst.Tags {
+						if strings.ToLower(*t.Key) == name {
+							nameTag = *t.Value
+							instance.Name = nameTag
+							instanceIPNameCache.Lock()
+							instanceIPNameCache.cache[ip] = *t.Value
+							instanceIPNameCache.Unlock()
+						}
+					}
+
+					az := *inst.Placement.AvailabilityZone
+					inRegion := az[0 : len(az)-1]
+					instance.Region = inRegion
+
+					for _, eni := range inst.NetworkInterfaces {
+						instance.Enis = append(instance.Enis, *eni.NetworkInterfaceId)
+					}
+
+					src.iCache.Lock()
+					src.iCache.cache = append(src.iCache.cache, instance)
+					src.iCache.Unlock()
 				}
 			}
-		}
+		}(r)
 	}
 
-	log.Println("Finished reading DNS entires")
+	wg.Wait()
+
+	log.Printf("Found %d instances in ec2", +len(src.iCache.cache))
 }
 
-func getInstanceName(instanceId string) string {
-	name, found := instanceCache.cache[instanceId]
+func (src VPCFlowLogCap) buildFlowLogInput(instance *EC2Instance) (*cloudwatchlogs.GetLogEventsInput, error) {
+	f := &ec2.Filter{
+		Name:   aws.String("resource-id"),
+		Values: []*string{&instance.VpcId},
+	}
+
+	ec2Svc := buildNewEc2Session(instance.Region)
+	fl, err := ec2Svc.DescribeFlowLogs(&ec2.DescribeFlowLogsInput{Filter: []*ec2.Filter{f}})
+	if err != nil {
+		log.Printf("%v\n", err)
+	}
+	if len(fl.FlowLogs) == 0 {
+		log.Println("Cannot find flowlogs")
+		return nil, errors.New("cannot find flow logs")
+	}
+
+	groupName := fl.FlowLogs[0].LogGroupName
+	logStreams, err := src.cloudWatchSvc.DescribeLogStreams(&cloudwatchlogs.DescribeLogStreamsInput{LogGroupName: groupName})
+	if err != nil {
+		log.Printf("%v\n", err)
+	}
+	if len(logStreams.LogStreams) == 0 {
+		log.Println("Cannot find log streams at all")
+		return nil, errors.New("cannot find log streams at all")
+	}
+
+	logStream := instance.Enis[0] + "-all"
+	gIn := &cloudwatchlogs.GetLogEventsInput{
+		LogGroupName:  groupName,
+		LogStreamName: &logStream,
+	}
+	return gIn, nil
+}
+
+func (src *VPCFlowLogCap) getInstanceName(instanceId string) string {
+	name, found := instanceIPNameCache.cache[instanceId]
 	if !found {
-		return instanceId
+		instance := src.findInstanceFromCache(func(in EC2Instance) bool {
+			return in.InstanceId == instanceId
+		})
+		if instance == nil {
+			return instanceId
+		}
+
+		return instance.String()
 	}
 
 	return name
 }
 
-func buildNewEc2Session(region string, profile string) *ec2.EC2 {
-	cfg, sess := buildNewAwsConfigSession(region, profile)
-	return ec2.New(sess, cfg)
-}
-
-func buildNewAwsConfigSession(region string, profile string) (*aws.Config, *session.Session) {
-	if region == "" {
-		region = inRegion
-	}
-	cfg := &aws.Config{
-		Region:      &region,
-		Credentials: credentials.NewSharedCredentials("", profile),
-	}
-	sess, err := session.NewSession(cfg)
-	if err != nil {
-		log.Panic(err)
-	}
-
-	return cfg, sess
-}
-
-func privateIP(ip string) (bool, error) {
-	var err error
-	private := false
-	IP := net.ParseIP(ip)
-	if IP == nil {
-		err = errors.New("invalid IP")
-	} else {
-		_, private24BitBlock, _ := net.ParseCIDR("10.0.0.0/8")
-		_, private20BitBlock, _ := net.ParseCIDR("172.16.0.0/12")
-		_, private16BitBlock, _ := net.ParseCIDR("192.168.0.0/16")
-		private = private24BitBlock.Contains(IP) || private20BitBlock.Contains(IP) || private16BitBlock.Contains(IP)
-	}
-	return private, err
-}
-
-func buildMetrics(packets string, action string) (int, int) {
-	normal, _ := strconv.Atoi(packets)
-	errors := 0
-
-	if action == "REJECT" {
-		errors = normal
-		normal = 0
-	}
-
-	return normal, errors
+func (src *VPCFlowLogCap) findInstanceFromCache(f func(in EC2Instance) bool) *EC2Instance {
+	return src.iCache.cache.findBy(f)
 }
