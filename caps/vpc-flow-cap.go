@@ -2,7 +2,6 @@ package caps
 
 import (
 	"errors"
-	"fmt"
 	"log"
 	"math"
 	"net"
@@ -18,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/route53"
+	"time"
 )
 
 type instanceCacheHolder struct {
@@ -25,24 +25,32 @@ type instanceCacheHolder struct {
 	sync.Mutex
 }
 
+type EC2Instance struct {
+	InstanceId, Name, VpcId string
+	Enis                    []string
+}
+
+type EC2Instances []EC2Instance
+
+var instances EC2Instances
 var instanceCache instanceCacheHolder
 var inRegion = "us-east-1" //default region
 
 type VPCFlowLogCap struct {
 	ec2Svc        *ec2.EC2
-	InstanceId    string
+	InstanceIds   string
 	cloudWatchSvc *cloudwatchlogs.CloudWatchLogs
 	AWSProfile    string
 	Region        string
 }
 
 type VPCFlowLogCapInput struct {
-	AWSProfile string
-	InstanceId string
+	AWSProfile  string
+	InstanceIds string
 }
 
 func MakeNewVPCFlowCap(in VPCFlowLogCapInput) *VPCFlowLogCap {
-	if in.InstanceId == "" {
+	if in.InstanceIds == "" {
 		panic("InstanceId must be set")
 	}
 
@@ -72,11 +80,17 @@ func MakeNewVPCFlowCap(in VPCFlowLogCapInput) *VPCFlowLogCap {
 
 	cwLogs := cloudwatchlogs.New(sess, cfg)
 
-	return &VPCFlowLogCap{cloudWatchSvc: cwLogs, InstanceId: in.InstanceId, AWSProfile: in.AWSProfile}
+	return &VPCFlowLogCap{cloudWatchSvc: cwLogs, InstanceIds: in.InstanceIds, AWSProfile: in.AWSProfile}
 }
 
 func (src VPCFlowLogCap) StartCapture() (*VizceralNode, error) {
-	var vpcId, targetedInstanceName string
+	instanceIdNameMap := make(map[string]string)
+	instanceTokens := strings.Split(src.InstanceIds, ",")
+	for _, tokens := range instanceTokens {
+		instanceIdNameMap[tokens] = ""
+	}
+
+	var vpcId string
 	var netIfaces, ips []string
 
 	regions := strings.Split(os.Getenv("REGIONS"), ",")
@@ -110,7 +124,7 @@ func (src VPCFlowLogCap) StartCapture() (*VizceralNode, error) {
 						}
 					}
 
-					if *inst.InstanceId == src.InstanceId {
+					if *inst.InstanceId == src.InstanceIds {
 						vpcId = *inst.VpcId
 						az := *inst.Placement.AvailabilityZone
 						inRegion = az[0 : len(az)-1]
@@ -120,9 +134,9 @@ func (src VPCFlowLogCap) StartCapture() (*VizceralNode, error) {
 						}
 
 						if nameTag != "" {
-							targetedInstanceName = nameTag
+							instanceIdNameMap[*inst.InstanceId] = nameTag
 						} else {
-							targetedInstanceName = *inst.NetworkInterfaces[0].PrivateIpAddress
+							instanceIdNameMap[*inst.InstanceId] = *inst.NetworkInterfaces[0].PrivateIpAddress
 						}
 					}
 				}
@@ -138,7 +152,7 @@ func (src VPCFlowLogCap) StartCapture() (*VizceralNode, error) {
 		panic("Cannot find enis for instance. Can't happen.")
 	}
 
-	log.Printf("Found instance "+src.InstanceId+" in VPC "+vpcId+". ENIs: %v. IPs: %v\n", netIfaces, ips)
+	log.Printf("Found instance "+src.InstanceIds+" in VPC "+vpcId+". ENIs: %v. IPs: %v\n", netIfaces, ips)
 
 	f := &ec2.Filter{
 		Name:   aws.String("resource-id"),
@@ -173,11 +187,9 @@ func (src VPCFlowLogCap) StartCapture() (*VizceralNode, error) {
 		return nil, err
 	}
 
-	log.Println("Node name: " + targetedInstanceName)
-
 	resultCache := make(map[string]bool)
 
-	rootNode := MakeRootVizceralNode(targetedInstanceName)
+	rootNode := MakeRootVizceralNode("Target")
 	vn := &rootNode.Nodes[1]
 
 	for _, evt := range events.Events {
@@ -200,8 +212,19 @@ func (src VPCFlowLogCap) StartCapture() (*VizceralNode, error) {
 
 		_, ok := resultCache[mapHash]
 		if !ok {
+			//startDateStr := tokens[10]
+			endDateStr := tokens[11]
+			//sD, _ := strconv.Atoi(startDateStr)
+			eD, _ := strconv.Atoi(endDateStr)
+			//startDate := time.Unix(int64(sD), 0)
+			//log.Printf("%v", startDate)
+			endDate := time.Unix(int64(eD), 0)
 			resultCache[mapHash] = true
-			fmt.Println(value)
+			//fmt.Println(value)
+
+			if endDate.UTC().Day() != time.Now().UTC().Day() {
+				log.Println("Not today - skip")
+			}
 
 			var internetNode *VizceralNode
 			for _, n := range vn.Nodes {
@@ -210,12 +233,11 @@ func (src VPCFlowLogCap) StartCapture() (*VizceralNode, error) {
 				}
 			}
 
-			srcIsPublic := !srcIsPrivateIp
+			srcIsPublic, dstIsPublic := !srcIsPrivateIp, !dstIsPrivateIp
 			if srcIsPublic {
 				valSrc = internet
 			}
 
-			dstIsPublic := !dstIsPrivateIp
 			if dstIsPublic {
 				valDst = internet
 			}

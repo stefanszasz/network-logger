@@ -24,7 +24,7 @@ import (
 
 var (
 	localIp, bpfFilter, outputFile string
-	awsProfile, instanceId         string
+	awsProfile, instanceIds        string
 	devName, hostName, fileOwner   string
 	capRes                         caps.BPFCaptureResult
 	ch                             chan caps.VizceralNode
@@ -37,7 +37,7 @@ func init() {
 	flag.StringVar(&fileOwner, "fileowner", "", "fileowner=username")
 
 	flag.StringVar(&awsProfile, "profile", "", "profile=awsprofile")
-	flag.StringVar(&instanceId, "instanceId", "", "instanceId=i-182716171")
+	flag.StringVar(&instanceIds, "instanceIds", os.Getenv("INSTANCE_IDS"), "instanceIds=i-182716171")
 
 	flag.Parse()
 
@@ -47,21 +47,29 @@ func init() {
 }
 
 func main() {
-	//handleTermination()
+	flowSource := os.Getenv("SOURCE")
+	if flowSource == "" {
+		log.Panic("SOURCE env var must be set.")
+	}
 
-	//in := &caps.BPFCaptureInput{Device: devName, Filter: bpfFilter}
-	//bpfCap := caps.MakeNewBPFCapture(in)
+	if flowSource == "vpc-flowlog" {
+		in := caps.VPCFlowLogCapInput{AWSProfile: awsProfile, InstanceIds: instanceIds}
+		c := caps.MakeNewVPCFlowCap(in)
+		r, _ := c.StartCapture()
+		trySavingOutput(r.String())
+		return
+	}
 
-	//ch := make(chan caps.VizceralNode)
-	//_, err := bpfCap.StartCapture(ch)
-	//if err != nil {
-	//	log.Panic(err)
-	//}
+	handleTermination()
 
-	in := caps.VPCFlowLogCapInput{AWSProfile: awsProfile, InstanceId: instanceId}
-	c := caps.MakeNewVPCFlowCap(in)
-	r, _ := c.StartCapture()
-	trySavingOutput(r.String())
+	in := &caps.BPFCaptureInput{Device: devName, Filter: bpfFilter}
+	bpfCap := caps.MakeNewBPFCapture(in)
+
+	ch := make(chan caps.VizceralNode)
+	_, err := bpfCap.StartCapture(ch)
+	if err != nil {
+		log.Panic(err)
+	}
 }
 
 func handleTermination() {
@@ -112,7 +120,7 @@ func trySavingOutput(jsonResult string) {
 				return
 			}
 			s3client := s3.New(sess, cfg)
-			file := instanceId + "-" + time.Now().UTC().String() + ".json"
+			file := instanceIds + "-" + time.Now().UTC().String() + ".json"
 			_, err = s3client.CopyObject(&s3.CopyObjectInput{Bucket: &bucketName, Key: &file})
 			if err != nil {
 				log.Println("Cannot copy file to s3: ", err.Error())
