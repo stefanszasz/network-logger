@@ -29,7 +29,6 @@ func init() {
 	flag.StringVar(&outputFile, "out", "/tmp/generated.json", "out=/path/to/file.json")
 	flag.StringVar(&devName, "dev", "", "dev=en0")
 	flag.StringVar(&fileOwner, "fileowner", "", "fileowner=username")
-
 	flag.StringVar(&instanceIds, "instanceIds", os.Getenv("INSTANCE_IDS"), "instanceIds=i-182716171")
 
 	flag.Parse()
