@@ -95,12 +95,20 @@ type (
 )
 type EC2Instances []EC2Instance
 
-func (self VizceralNode) String() string {
-	marshal, err := json.Marshal(self)
+func (vn VizceralNode) String() string {
+	marshal, err := json.Marshal(vn)
 	if err != nil {
 		log.Fatal(err)
 	}
 	return string(marshal)
+}
+
+func (vn VizceralNode) Title() string {
+	if len(vn.Connections) == 0 {
+		return vn.Name
+	}
+
+	return vn.Connections[0].Target
 }
 
 func (src EC2Instance) String() string {

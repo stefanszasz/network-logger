@@ -1,21 +1,10 @@
 package main
 
 import (
+	"flag"
 	"log"
 	"os"
-	"strings"
-	"time"
-
-	"io/ioutil"
-	"os/exec"
-
-	"flag"
-
 	"stefanszasz/network-logger/caps"
-
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
 )
 
 var (
@@ -49,43 +38,17 @@ func main() {
 		capture := caps.MakeNewVPCFlowCap(in)
 		nodes, _ := capture.StartCapture()
 		for _, n := range nodes {
-			trySavingOutput(n.String())
+			trySavingOutput(n.String(), n.Title())
 		}
 	}
 }
 
-func trySavingOutput(jsonResult string) {
-	if outputFile != "" {
-		log.Println("Saving output...")
-		if strings.Contains(outputFile, "s3://") {
-			cfg := &aws.Config{}
-			sess, err := session.NewSession(cfg)
-			if err != nil {
-				log.Panic(err)
-			}
-
-			bucketName := os.Getenv("OUT_BUCKET")
-			if bucketName == "" {
-				log.Println("Cannot find which bucket to write to. Exiting")
-				return
-			}
-			s3client := s3.New(sess, cfg)
-			file := instanceIds + "-" + time.Now().UTC().String() + ".json"
-			_, err = s3client.CopyObject(&s3.CopyObjectInput{Bucket: &bucketName, Key: &file})
-			if err != nil {
-				log.Println("Cannot copy file to s3: ", err.Error())
-			}
-		} else {
-			err := ioutil.WriteFile(outputFile, []byte(jsonResult), 0666)
-			if err != nil {
-				log.Fatal("Cannot save file: ", err)
-			}
-			cmd := exec.Command("chown", fileOwner, outputFile)
-			_, err = cmd.Output()
-			if err != nil {
-				log.Fatal("Cannot change owner: " + err.Error())
-			}
-			log.Println("Saved to: " + outputFile)
-		}
-	}
+func trySavingOutput(jsonResult string, title string) {
+	store := caps.MakeNewStorer(caps.StoreInput{
+		FileName:  outputFile,
+		FileOwner: fileOwner,
+		Content:   jsonResult,
+		Title:     title,
+	})
+	store.Store()
 }
