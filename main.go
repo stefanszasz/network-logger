@@ -5,6 +5,8 @@ import (
 	"log"
 	"os"
 	"stefanszasz/network-logger/caps"
+	"syscall"
+	"os/signal"
 )
 
 var (
@@ -37,9 +39,22 @@ func main() {
 		in := caps.VPCFlowLogCapInput{InstanceIds: instanceIds}
 		capture := caps.MakeNewVPCFlowCap(in)
 		nodes, _ := capture.StartCapture()
+		log.Printf("Total nodes %d", len(nodes))
 		for _, n := range nodes {
 			trySavingOutput(n.String(), n.Title())
 		}
+	} else if flowSource == "bpf-filter" {
+		handleTermination()
+		in := &caps.BPFCaptureInput{Device: devName, Filter: bpfFilter}
+		bpfCap := caps.MakeNewBPFCapture(in)
+
+		ch := make(chan caps.VizceralNode)
+		_, err := bpfCap.StartCapture(ch)
+		if err != nil {
+			log.Fatal(err)
+		}
+	} else {
+		log.Fatal("SOURCE env var must be vpc-flowlog or bpf-filter")
 	}
 }
 
@@ -51,4 +66,36 @@ func trySavingOutput(jsonResult string, title string) {
 		Title:     title,
 	})
 	store.Store()
+}
+
+func handleTermination() {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGKILL)
+	go func() {
+		<-c
+		vn := <-ch
+		vn.Nodes[1].Name = hostName
+		// TODO: handle node finish when closing manually
+		//connections := vn.Nodes[1].Connections
+
+		// for _, con := range connections {
+		// 	conKey := con.Source + con.Target
+		// 	timeSlice := capRes.PacketTimeMap[conKey]
+		// 	if timeSlice.Count > 1 {
+		// 		timeFrames := capRes.PacketTimeMap[conKey]
+		// 		secondsDiff := timeFrames.End.Sub(timeFrames.Start).Seconds()
+		//
+		// 		packPerSec := float64(timeFrames.Count) / secondsDiff
+		// 		con.Metrics.Normal = packPerSec
+		// 		con.Metrics.Danger = float64(timeSlice.Err)
+		// 		log.Printf("Packets / sec: %.2f", packPerSec)
+		// 	}
+		// }
+		//
+		// jsonResult := vn.String()
+		// log.Println(jsonResult)
+		//
+		// trySavingOutput(jsonResult)
+		os.Exit(0)
+	}()
 }

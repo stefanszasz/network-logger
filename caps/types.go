@@ -18,7 +18,7 @@ const (
 
 type (
 	PacketEntry struct {
-		SourceIp, SourcePort           string
+		SourceIP, SourcePort           string
 		DestinationIP, DestinationPort string
 	}
 

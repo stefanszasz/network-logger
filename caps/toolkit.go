@@ -16,30 +16,32 @@ func privateIP(ip string) (bool, error) {
 	IP := net.ParseIP(ip)
 	if IP == nil {
 		err = errors.New("invalid IP")
-	} else {
-		_, private24BitBlock, _ := net.ParseCIDR("10.0.0.0/8")
-		_, private20BitBlock, _ := net.ParseCIDR("172.16.0.0/12")
-		_, private16BitBlock, _ := net.ParseCIDR("192.168.0.0/16")
-		private = private24BitBlock.Contains(IP) || private20BitBlock.Contains(IP) || private16BitBlock.Contains(IP)
+		return false, err
 	}
+
+	_, private24BitBlock, _ := net.ParseCIDR("10.0.0.0/8")
+	_, private20BitBlock, _ := net.ParseCIDR("172.16.0.0/12")
+	_, private16BitBlock, _ := net.ParseCIDR("192.168.0.0/16")
+	private = private24BitBlock.Contains(IP) || private20BitBlock.Contains(IP) || private16BitBlock.Contains(IP)
 	return private, err
 }
 
 func buildMetrics(packets string, action string) (int, int) {
 	normal, _ := strconv.Atoi(packets)
-	errors := 0
+	errs := 0
 
 	if action == "REJECT" {
-		errors = normal
+		errs = normal
 		normal = 0
 	}
 
-	return normal, errors
+	return normal, errs
 }
 
 func buildNewEc2Session(region string) *ec2.EC2 {
 	cfg, sess := buildNewAwsConfigSession(region)
-	return ec2.New(sess, cfg)
+	ec2Inst := ec2.New(sess, cfg)
+	return ec2Inst
 }
 
 func buildNewAwsConfigSession(region string) (*aws.Config, *session.Session) {

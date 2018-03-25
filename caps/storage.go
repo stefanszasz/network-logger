@@ -24,6 +24,10 @@ type FileStorer struct {
 	StoreInput
 }
 
+type S3Storer struct {
+	StoreInput
+}
+
 func (f FileStorer) Store() {
 	err := ioutil.WriteFile(f.FileName, []byte(f.Content), 0666)
 	if err != nil {
@@ -37,9 +41,6 @@ func (f FileStorer) Store() {
 	log.Println("Saved to: " + f.FileName)
 }
 
-type S3Storer struct {
-	StoreInput
-}
 
 func (s S3Storer) Store() {
 	cfg := &aws.Config{}

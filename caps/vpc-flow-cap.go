@@ -10,12 +10,13 @@ import (
 	"strings"
 	"sync"
 
+	"time"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/route53"
-	"time"
 )
 
 var instanceIPNameCache instanceCacheHolder
@@ -65,8 +66,9 @@ func (src VPCFlowLogCap) StartCapture() ([]*VizceralNode, error) {
 		locInst := src.findInstanceFromCache(func(in EC2Instance) bool {
 			return in.InstanceId == instId
 		})
-		if locInst == nil {
+		if locInst == nil || locInst.InstanceId == "" {
 			log.Printf("Counldn't find instance %s. Skipping. \n", instId)
+			continue
 		}
 		foundInstances = append(foundInstances, *locInst)
 	}
@@ -98,7 +100,7 @@ func (src VPCFlowLogCap) StartCapture() ([]*VizceralNode, error) {
 	return rootNodes, nil
 }
 
-func (src VPCFlowLogCap) fillDNSInstanceCache(wg *sync.WaitGroup) {
+func (src *VPCFlowLogCap) fillDNSInstanceCache(wg *sync.WaitGroup) {
 	log.Println("Reading DNS entries")
 	wg.Add(1)
 	defer wg.Done()
@@ -127,7 +129,7 @@ func (src VPCFlowLogCap) fillDNSInstanceCache(wg *sync.WaitGroup) {
 	log.Println("Finished reading DNS entires")
 }
 
-func (src VPCFlowLogCap) buildGraph(instance *EC2Instance, events []*cloudwatchlogs.OutputLogEvent) *VizceralNode {
+func (src *VPCFlowLogCap) buildGraph(instance *EC2Instance, events []*cloudwatchlogs.OutputLogEvent) *VizceralNode {
 	sourceDestCache := make(map[string]bool)
 
 	rootNode := MakeRootVizceralNode(instance.String())
@@ -135,16 +137,16 @@ func (src VPCFlowLogCap) buildGraph(instance *EC2Instance, events []*cloudwatchl
 
 	for _, evt := range events {
 		tokens := strings.Split(*evt.Message, " ")
-		srcIp := tokens[3]
-		dstIp := tokens[4]
+		srcIP := tokens[3]
+		dstIP := tokens[4]
 		action := tokens[12]
 		packets := tokens[8]
 
-		srcIsPrivateIp, _ := privateIP(srcIp)
-		dstIsPrivateIp, _ := privateIP(dstIp)
+		srcIsPrivateIP, _ := privateIP(srcIP)
+		dstIsPrivateIP, _ := privateIP(dstIP)
 
-		valSrc := src.getInstanceName(srcIp)
-		valDst := src.getInstanceName(dstIp)
+		valSrc := src.getInstanceName(srcIP)
+		valDst := src.getInstanceName(dstIP)
 
 		value := "Src: " + valSrc + ". Destination: " + valDst
 		vTokens := strings.Split(value, "")
@@ -174,7 +176,7 @@ func (src VPCFlowLogCap) buildGraph(instance *EC2Instance, events []*cloudwatchl
 				}
 			}
 
-			srcIsPublic, dstIsPublic := !srcIsPrivateIp, !dstIsPrivateIp
+			srcIsPublic, dstIsPublic := !srcIsPrivateIP, !dstIsPrivateIP
 			if srcIsPublic {
 				valSrc = internet
 			}
@@ -320,7 +322,7 @@ func (src *VPCFlowLogCap) fillInstanceCache(wg *sync.WaitGroup) {
 	log.Printf("Found %d instances in ec2", +len(src.iCache.cache))
 }
 
-func (src VPCFlowLogCap) buildFlowLogInput(instance *EC2Instance) (*cloudwatchlogs.GetLogEventsInput, error) {
+func (src *VPCFlowLogCap) buildFlowLogInput(instance *EC2Instance) (*cloudwatchlogs.GetLogEventsInput, error) {
 	f := &ec2.Filter{
 		Name:   aws.String("resource-id"),
 		Values: []*string{&instance.VpcId},
@@ -332,17 +334,15 @@ func (src VPCFlowLogCap) buildFlowLogInput(instance *EC2Instance) (*cloudwatchlo
 		log.Printf("%v\n", err)
 	}
 	if len(fl.FlowLogs) == 0 {
-		log.Println("Cannot find flowlogs")
-		return nil, errors.New("cannot find flow logs")
+		return nil, errors.New("cannot find flow logs for instance " + instance.InstanceId + "; name: " + instance.Name)
 	}
 
 	groupName := fl.FlowLogs[0].LogGroupName
 	logStreams, err := src.cloudWatchSvc.DescribeLogStreams(&cloudwatchlogs.DescribeLogStreamsInput{LogGroupName: groupName})
 	if err != nil {
-		log.Printf("%v\n", err)
+		return nil, err
 	}
 	if len(logStreams.LogStreams) == 0 {
-		log.Println("Cannot find log streams at all")
 		return nil, errors.New("cannot find log streams at all")
 	}
 
@@ -354,14 +354,14 @@ func (src VPCFlowLogCap) buildFlowLogInput(instance *EC2Instance) (*cloudwatchlo
 	return gIn, nil
 }
 
-func (src *VPCFlowLogCap) getInstanceName(instanceId string) string {
-	name, found := instanceIPNameCache.cache[instanceId]
+func (src *VPCFlowLogCap) getInstanceName(instanceID string) string {
+	name, found := instanceIPNameCache.cache[instanceID]
 	if !found {
 		instance := src.findInstanceFromCache(func(in EC2Instance) bool {
-			return in.InstanceId == instanceId
+			return in.InstanceId == instanceID
 		})
 		if instance == nil {
-			return instanceId
+			return instanceID
 		}
 
 		return instance.String()
