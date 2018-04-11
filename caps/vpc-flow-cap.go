@@ -16,7 +16,11 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/service/ecs"
+	"github.com/aws/aws-sdk-go/service/elb"
+	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/aws/aws-sdk-go/service/route53"
+	"net"
 )
 
 var instanceIPNameCache instanceCacheHolder
@@ -57,9 +61,28 @@ func (src VPCFlowLogCap) StartCapture() ([]*VizceralNode, error) {
 		instanceIdNameMap[tokens] = ""
 	}
 
+	nrRegions := len(strings.Split(os.Getenv("REGIONS"), ","))
+
+	log.Println("Start filling resource cache")
+	//fill instance cache and wait until it finishes
+	src.fillInstanceCache()
+
+	//and other concurrently
 	var wg sync.WaitGroup
+
+	wg.Add(nrRegions)
+	go src.fillRDSCache(&wg)
+
+	wg.Add(nrRegions)
+	go src.fillECSCache(&wg)
+	wg.Add(1) //R53 is not regional
 	go src.fillDNSInstanceCache(&wg)
-	src.fillInstanceCache(&wg)
+	wg.Add(nrRegions)
+	go src.fillELBCache(&wg)
+
+	wg.Wait()
+
+	log.Println("Finished filling resource cache")
 
 	var foundInstances EC2Instances
 	for _, instId := range instanceTokens {
@@ -102,7 +125,6 @@ func (src VPCFlowLogCap) StartCapture() ([]*VizceralNode, error) {
 
 func (src *VPCFlowLogCap) fillDNSInstanceCache(wg *sync.WaitGroup) {
 	log.Println("Reading DNS entries")
-	wg.Add(1)
 	defer wg.Done()
 
 	cfg, session := buildNewAwsConfigSession("")
@@ -266,11 +288,10 @@ func (src *VPCFlowLogCap) buildGraph(instance *EC2Instance, events []*cloudwatch
 	return rootNode
 }
 
-func (src *VPCFlowLogCap) fillInstanceCache(wg *sync.WaitGroup) {
+func (src *VPCFlowLogCap) fillInstanceCache() {
 	regions := strings.Split(os.Getenv("REGIONS"), ",")
-
+	var wg sync.WaitGroup
 	wg.Add(len(regions))
-
 	for _, r := range regions {
 		go func(region string) {
 			defer wg.Done()
@@ -285,6 +306,11 @@ func (src *VPCFlowLogCap) fillInstanceCache(wg *sync.WaitGroup) {
 				for _, inst := range res.Instances {
 					ip := *inst.PrivateIpAddress
 					nameTag := ""
+
+					if inst.VpcId == nil {
+						log.Println(*inst.InstanceId + " has no VPCID, skipping")
+						continue
+					}
 
 					instance := EC2Instance{
 						InstanceId: *inst.InstanceId,
@@ -307,6 +333,7 @@ func (src *VPCFlowLogCap) fillInstanceCache(wg *sync.WaitGroup) {
 
 					for _, eni := range inst.NetworkInterfaces {
 						instance.Enis = append(instance.Enis, *eni.NetworkInterfaceId)
+						instance.PrivateIps = append(instance.PrivateIps, *eni.PrivateIpAddress)
 					}
 
 					src.iCache.Lock()
@@ -320,6 +347,224 @@ func (src *VPCFlowLogCap) fillInstanceCache(wg *sync.WaitGroup) {
 	wg.Wait()
 
 	log.Printf("Found %d instances in ec2", +len(src.iCache.cache))
+}
+
+func (src *VPCFlowLogCap) fillELBCache(wg *sync.WaitGroup) {
+	regions := strings.Split(os.Getenv("REGIONS"), ",")
+
+	for _, r := range regions {
+		go func(region string) {
+			defer wg.Done()
+
+			elbSvc := buildNewELBSession(region)
+			elbs, err := elbSvc.DescribeLoadBalancers(&elb.DescribeLoadBalancersInput{})
+			if err != nil {
+				log.Panic(err)
+			}
+
+			for _, elb := range elbs.LoadBalancerDescriptions {
+				names, err := net.LookupIP(*elb.DNSName)
+				if err != nil {
+					log.Println(err)
+					continue
+				}
+
+				for _, ip := range names {
+					instanceIPNameCache.Lock()
+					instanceIPNameCache.cache[ip.String()] = *elb.DNSName
+					instanceIPNameCache.Unlock()
+				}
+			}
+
+			svc := buildNewEc2Session(region)
+			filter := &ec2.Filter{
+				Name:   aws.String("status"),
+				Values: []*string{aws.String("in-use")},
+			}
+			enis, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+				Filters: []*ec2.Filter{filter},
+			})
+			if err != nil {
+				log.Println(err)
+			}
+
+			for _, eni := range enis.NetworkInterfaces {
+				if eni.Association == nil {
+					continue
+				}
+
+				instanceIPNameCache.Lock()
+
+				if elbName, found := instanceIPNameCache.cache[*eni.Association.PublicIp]; found {
+					instanceIPNameCache.cache[*eni.PrivateIpAddress] = elbName
+				} else {
+					if *eni.Description != "Primary network interface" {
+						instanceIPNameCache.cache[*eni.PrivateIpAddress] = *eni.Description
+					}
+				}
+				instanceIPNameCache.Unlock()
+			}
+		}(r)
+	}
+}
+
+func (src *VPCFlowLogCap) fillRDSCache(wg *sync.WaitGroup) {
+	log.Println("Reading RDS entries")
+	regions := strings.Split(os.Getenv("REGIONS"), ",")
+	for _, r := range regions {
+		go func(region string) {
+			defer wg.Done()
+
+			svc := buildNewRDSSession(region)
+			resources, err := svc.DescribeDBInstances(&rds.DescribeDBInstancesInput{})
+			if err != nil {
+				log.Println(err)
+				return
+			}
+
+			for _, rds := range resources.DBInstances {
+				if rds.Endpoint == nil {
+					continue
+				}
+				ips, err := net.LookupIP(*rds.Endpoint.Address)
+				if err != nil {
+					log.Println(err)
+					continue
+				}
+
+				for _, ip := range ips {
+					instanceIPNameCache.Lock()
+					log.Println(ip.String())
+					instanceIPNameCache.cache[ip.String()] = *rds.Endpoint.Address
+					instanceIPNameCache.Unlock()
+				}
+			}
+		}(r)
+	}
+
+	log.Println("Finished reading RDS entries")
+}
+
+func (src *VPCFlowLogCap) fillECSCache(wg *sync.WaitGroup) {
+	log.Println("Reading ECS entries")
+	regions := strings.Split(os.Getenv("REGIONS"), ",")
+
+	for _, r := range regions {
+		go func(region string) {
+			defer wg.Done()
+
+			svc := buildNewECSSession(region)
+
+			clusterOutput, err := svc.ListClusters(&ecs.ListClustersInput{})
+			if err != nil {
+				//log.Println(err)
+				return
+			}
+
+			clusters, err := svc.DescribeClusters(&ecs.DescribeClustersInput{
+				Clusters: clusterOutput.ClusterArns,
+			})
+			if len(clusters.Failures) > 0 {
+				//log.Println(clusters.Failures)
+				return
+			}
+			if err != nil {
+				log.Println(err)
+				return
+			}
+
+			containerIdInstanceIdMap := make(map[string]string)
+
+			for _, cluster := range clusters.Clusters {
+				log.Println("Cluster:  " + *cluster.ClusterName)
+
+				containerInstances, err := svc.ListContainerInstances(&ecs.ListContainerInstancesInput{Cluster: cluster.ClusterArn})
+				if err != nil {
+					log.Println(err)
+					continue
+				}
+
+				contInstances, err := svc.DescribeContainerInstances(&ecs.DescribeContainerInstancesInput{
+					ContainerInstances: containerInstances.ContainerInstanceArns,
+					Cluster:            cluster.ClusterArn,
+				})
+
+				for _, ci := range contInstances.ContainerInstances {
+					containerIdInstanceIdMap[*ci.ContainerInstanceArn] = *ci.Ec2InstanceId
+				}
+
+				if err != nil {
+					log.Println(err)
+					continue
+				}
+
+				tasksOutput, err := svc.ListTasks(&ecs.ListTasksInput{Cluster: cluster.ClusterArn})
+				if err != nil {
+					//log.Println(err)
+					continue
+				}
+
+				if len(tasksOutput.TaskArns) == 0 {
+					continue
+				}
+
+				resources, err := svc.DescribeTasks(&ecs.DescribeTasksInput{
+					Cluster: cluster.ClusterArn,
+					Tasks:   tasksOutput.TaskArns,
+				})
+				if err != nil {
+					//log.Println(err)
+					continue
+				}
+
+				for _, task := range resources.Tasks {
+					if task.ContainerInstanceArn == nil {
+						continue
+					}
+
+					tInstanceId, ok := containerIdInstanceIdMap[*task.ContainerInstanceArn]
+					if !ok {
+						log.Println("couldn't find: " + *task.ContainerInstanceArn)
+						continue
+					}
+
+					foundInst := src.iCache.cache.findBy(func(in EC2Instance) bool {
+						return in.InstanceId == tInstanceId
+					})
+					if foundInst == nil {
+						continue
+					}
+
+					for _, container := range task.Containers {
+						//log.Println("Container: " + *container.Name)
+
+						if len(container.NetworkInterfaces) == 0 {
+							instanceIPNameCache.Lock()
+							for _, ip := range foundInst.PrivateIps {
+								instanceIPNameCache.cache[ip] = *container.Name
+							}
+							instanceIPNameCache.Unlock()
+						} else {
+							for _, netIface := range container.NetworkInterfaces {
+								ipAddr := *netIface.PrivateIpv4Address
+								log.Println("Container Name : IPVD addr: " + *container.Name + ": " + ipAddr)
+								instanceIPNameCache.Lock()
+								for _, ip := range foundInst.PrivateIps {
+									instanceIPNameCache.cache[ip] = *container.Name
+								}
+								instanceIPNameCache.Unlock()
+							}
+						}
+
+					}
+				}
+
+			}
+		}(r)
+	}
+
+	log.Println("Finished reading ECS entries")
+
 }
 
 func (src *VPCFlowLogCap) buildFlowLogInput(instance *EC2Instance) (*cloudwatchlogs.GetLogEventsInput, error) {

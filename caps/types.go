@@ -79,6 +79,7 @@ type (
 	EC2Instance struct {
 		InstanceId, Name, VpcId, Region string
 		Enis                            []string
+		PrivateIps                      []string
 	}
 
 	VPCFlowLogCapInput struct {
@@ -93,6 +94,7 @@ type (
 		iCache        instancesFoundCacheHolder
 	}
 )
+
 type EC2Instances []EC2Instance
 
 func (vn VizceralNode) String() string {

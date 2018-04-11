@@ -8,6 +8,9 @@ import (
 	"log"
 	"net"
 	"strconv"
+	"github.com/aws/aws-sdk-go/service/elb"
+	"github.com/aws/aws-sdk-go/service/ecs"
+	"github.com/aws/aws-sdk-go/service/rds"
 )
 
 func privateIP(ip string) (bool, error) {
@@ -42,6 +45,24 @@ func buildNewEc2Session(region string) *ec2.EC2 {
 	cfg, sess := buildNewAwsConfigSession(region)
 	ec2Inst := ec2.New(sess, cfg)
 	return ec2Inst
+}
+
+func buildNewELBSession(region string) *elb.ELB {
+	cfg, sess := buildNewAwsConfigSession(region)
+	elbSession := elb.New(sess, cfg)
+	return elbSession
+}
+
+func buildNewECSSession(region string) *ecs.ECS {
+	cfg, sess := buildNewAwsConfigSession(region)
+	session := ecs.New(sess, cfg)
+	return session
+}
+
+func buildNewRDSSession(region string) *rds.RDS {
+	cfg, sess := buildNewAwsConfigSession(region)
+	session := rds.New(sess, cfg)
+	return session
 }
 
 func buildNewAwsConfigSession(region string) (*aws.Config, *session.Session) {
