@@ -14,6 +14,7 @@ import (
 
 type StoreInput struct {
 	FileName, FileOwner, Content, Title string
+	Id                                  string
 }
 
 type Storer interface {

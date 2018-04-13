@@ -47,8 +47,6 @@ func MakeNewVPCFlowCap(in VPCFlowLogCapInput) *VPCFlowLogCap {
 		}
 	}
 
-	log.Println("Finished reading DNS entries")
-
 	cwLogs := cloudwatchlogs.New(sess, cfg)
 
 	return &VPCFlowLogCap{cloudWatchSvc: cwLogs, InstanceIds: in.InstanceIds}
@@ -109,7 +107,7 @@ func (src VPCFlowLogCap) StartCapture() ([]*VizceralNode, error) {
 			continue
 		}
 
-		log.Println("Fetching logs...")
+		log.Println("Fetching logs for: " + instance.InstanceId)
 		eventResponse, err := src.cloudWatchSvc.GetLogEvents(gIn)
 		if err != nil {
 			log.Println(err)
@@ -188,7 +186,7 @@ func (src *VPCFlowLogCap) buildGraph(instance *EC2Instance, events []*cloudwatch
 			//fmt.Println(value)
 
 			if endDate.UTC().Day() != time.Now().UTC().Day() {
-				log.Println("Not today - skip")
+				//log.Println("Not today - skip")
 			}
 
 			var internetNode *VizceralNode
@@ -350,6 +348,8 @@ func (src *VPCFlowLogCap) fillInstanceCache() {
 }
 
 func (src *VPCFlowLogCap) fillELBCache(wg *sync.WaitGroup) {
+	log.Println("Started reading ELB cache")
+
 	regions := strings.Split(os.Getenv("REGIONS"), ",")
 
 	for _, r := range regions {
@@ -406,6 +406,8 @@ func (src *VPCFlowLogCap) fillELBCache(wg *sync.WaitGroup) {
 			}
 		}(r)
 	}
+
+	log.Println("Finished reading ELB cache")
 }
 
 func (src *VPCFlowLogCap) fillRDSCache(wg *sync.WaitGroup) {
@@ -434,7 +436,6 @@ func (src *VPCFlowLogCap) fillRDSCache(wg *sync.WaitGroup) {
 
 				for _, ip := range ips {
 					instanceIPNameCache.Lock()
-					log.Println(ip.String())
 					instanceIPNameCache.cache[ip.String()] = *rds.Endpoint.Address
 					instanceIPNameCache.Unlock()
 				}
@@ -457,7 +458,7 @@ func (src *VPCFlowLogCap) fillECSCache(wg *sync.WaitGroup) {
 
 			clusterOutput, err := svc.ListClusters(&ecs.ListClustersInput{})
 			if err != nil {
-				//log.Println(err)
+				log.Println(err)
 				return
 			}
 
@@ -465,7 +466,7 @@ func (src *VPCFlowLogCap) fillECSCache(wg *sync.WaitGroup) {
 				Clusters: clusterOutput.ClusterArns,
 			})
 			if len(clusters.Failures) > 0 {
-				//log.Println(clusters.Failures)
+				log.Println(clusters.Failures)
 				return
 			}
 			if err != nil {
@@ -476,7 +477,6 @@ func (src *VPCFlowLogCap) fillECSCache(wg *sync.WaitGroup) {
 			containerIdInstanceIdMap := make(map[string]string)
 
 			for _, cluster := range clusters.Clusters {
-				log.Println("Cluster:  " + *cluster.ClusterName)
 
 				containerInstances, err := svc.ListContainerInstances(&ecs.ListContainerInstancesInput{Cluster: cluster.ClusterArn})
 				if err != nil {
@@ -500,7 +500,7 @@ func (src *VPCFlowLogCap) fillECSCache(wg *sync.WaitGroup) {
 
 				tasksOutput, err := svc.ListTasks(&ecs.ListTasksInput{Cluster: cluster.ClusterArn})
 				if err != nil {
-					//log.Println(err)
+					log.Println(err)
 					continue
 				}
 

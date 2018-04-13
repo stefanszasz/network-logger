@@ -4,9 +4,9 @@ import (
 	"flag"
 	"log"
 	"os"
+	"os/signal"
 	"stefanszasz/network-logger/caps"
 	"syscall"
-	"os/signal"
 )
 
 var (
@@ -32,7 +32,7 @@ func init() {
 func main() {
 	flowSource := os.Getenv("SOURCE")
 	if flowSource == "" {
-		log.Panic("SOURCE env var must be set.")
+		log.Fatal("SOURCE env var must be set and should be either 'vpc-flowlog' or 'bpf-filter'")
 	}
 
 	if flowSource == "vpc-flowlog" {
@@ -41,7 +41,7 @@ func main() {
 		nodes, _ := capture.StartCapture()
 		log.Printf("Total nodes %d", len(nodes))
 		for _, n := range nodes {
-			trySavingOutput(n.String(), n.Title())
+			trySavingOutput(n.String(), n.Title(), n.InstanceId)
 		}
 	} else if flowSource == "bpf-filter" {
 		handleTermination()
@@ -54,16 +54,17 @@ func main() {
 			log.Fatal(err)
 		}
 	} else {
-		log.Fatal("SOURCE env var must be vpc-flowlog or bpf-filter")
+		log.Fatal("SOURCE env var must be 'vpc-flowlog' or 'bpf-filter'")
 	}
 }
 
-func trySavingOutput(jsonResult string, title string) {
+func trySavingOutput(jsonResult, title, id string) {
 	store := caps.MakeNewStorer(caps.StoreInput{
 		FileName:  outputFile,
 		FileOwner: fileOwner,
 		Content:   jsonResult,
 		Title:     title,
+		Id:        id,
 	})
 	store.Store()
 }

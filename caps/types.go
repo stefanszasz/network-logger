@@ -40,6 +40,7 @@ type (
 	VizceralNode struct {
 		Renderer    string               `json:"renderer"`
 		Name        string               `json:"name"`
+		InstanceId  string               `json:"instanceId"`
 		Class       string               `json:"class"`
 		MaxVolume   int                  `json:"maxVolume"`
 		Connections []VizceralConnection `json:"connections"`
