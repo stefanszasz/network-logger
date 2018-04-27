@@ -12,6 +12,7 @@ import (
 
 	"time"
 
+	fmt "fmt"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
@@ -53,6 +54,7 @@ func MakeNewVPCFlowCap(in VPCFlowLogCapInput) *VPCFlowLogCap {
 }
 
 func (src VPCFlowLogCap) StartCapture() ([]*VizceralNode, error) {
+	src.ShowInternetNode = os.Getenv("SHOW_INTERNET") == "true"
 	instanceIdNameMap := make(map[string]string)
 	instanceTokens := strings.Split(src.InstanceIds, ",")
 	for _, tokens := range instanceTokens {
@@ -136,10 +138,18 @@ func (src *VPCFlowLogCap) fillDNSInstanceCache(wg *sync.WaitGroup) {
 		for _, r := range rs.ResourceRecordSets {
 			if *r.Type == "A" {
 				if len(r.ResourceRecords) > 0 {
+					instanceIPNameCache.Lock()
 					ipVal := strings.TrimSpace(*r.ResourceRecords[0].Value)
 					dName := strings.TrimRight(*r.Name, ".")
-					instanceIPNameCache.Lock()
-					instanceIPNameCache.cache[ipVal] = dName
+
+					if existingName, found := instanceIPNameCache.cache[ipVal]; found {
+						newName := fmt.Sprintf("%s (%s)", existingName, dName)
+						//log.Println("DNS name: " + newName)
+						instanceIPNameCache.cache[ipVal] = newName
+					} else {
+						instanceIPNameCache.cache[ipVal] = dName
+					}
+
 					instanceIPNameCache.Unlock()
 				}
 			}
@@ -197,11 +207,11 @@ func (src *VPCFlowLogCap) buildGraph(instance *EC2Instance, events []*cloudwatch
 			}
 
 			srcIsPublic, dstIsPublic := !srcIsPrivateIP, !dstIsPrivateIP
-			if srcIsPublic {
+			if srcIsPublic && src.ShowInternetNode {
 				valSrc = internet
 			}
 
-			if dstIsPublic {
+			if dstIsPublic && src.ShowInternetNode {
 				valDst = internet
 			}
 
@@ -377,32 +387,34 @@ func (src *VPCFlowLogCap) fillELBCache(wg *sync.WaitGroup) {
 			}
 
 			svc := buildNewEc2Session(region)
-			filter := &ec2.Filter{
-				Name:   aws.String("status"),
-				Values: []*string{aws.String("in-use")},
-			}
-			enis, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
-				Filters: []*ec2.Filter{filter},
-			})
+			enis, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{})
 			if err != nil {
 				log.Println(err)
 			}
 
 			for _, eni := range enis.NetworkInterfaces {
-				if eni.Association == nil {
-					continue
-				}
+				if eni.Association != nil {
+					if elbName, found := instanceIPNameCache.cache[*eni.Association.PublicIp]; found {
+						instanceIPNameCache.cache[*eni.PrivateIpAddress] = elbName
+					} else {
+						if *eni.Description != "Primary network interface" {
+							instanceIPNameCache.Lock()
+							instanceIPNameCache.cache[*eni.PrivateIpAddress] = *eni.Description
 
-				instanceIPNameCache.Lock()
-
-				if elbName, found := instanceIPNameCache.cache[*eni.Association.PublicIp]; found {
-					instanceIPNameCache.cache[*eni.PrivateIpAddress] = elbName
+							instanceIPNameCache.Unlock()
+						}
+					}
 				} else {
 					if *eni.Description != "Primary network interface" {
-						instanceIPNameCache.cache[*eni.PrivateIpAddress] = *eni.Description
+						instanceIPNameCache.Lock()
+
+						if _, found := instanceIPNameCache.cache[*eni.PrivateIpAddress]; !found {
+							instanceIPNameCache.cache[*eni.PrivateIpAddress] = *eni.Description
+						}
+
+						instanceIPNameCache.Unlock()
 					}
 				}
-				instanceIPNameCache.Unlock()
 			}
 		}(r)
 	}
@@ -541,7 +553,12 @@ func (src *VPCFlowLogCap) fillECSCache(wg *sync.WaitGroup) {
 						if len(container.NetworkInterfaces) == 0 {
 							instanceIPNameCache.Lock()
 							for _, ip := range foundInst.PrivateIps {
-								instanceIPNameCache.cache[ip] = *container.Name
+								//instanceIPNameCache.cache[ip] = *container.Name
+								if _, found := instanceIPNameCache.cache[ip]; found {
+									instanceIPNameCache.cache[ip] += " - " + *container.Name
+								} else {
+									instanceIPNameCache.cache[ip] = *container.Name
+								}
 							}
 							instanceIPNameCache.Unlock()
 						} else {
@@ -550,7 +567,12 @@ func (src *VPCFlowLogCap) fillECSCache(wg *sync.WaitGroup) {
 								log.Println("Container Name : IPVD addr: " + *container.Name + ": " + ipAddr)
 								instanceIPNameCache.Lock()
 								for _, ip := range foundInst.PrivateIps {
-									instanceIPNameCache.cache[ip] = *container.Name
+
+									if _, found := instanceIPNameCache.cache[ip]; found {
+										instanceIPNameCache.cache[ip] += " - " + *container.Name
+									} else {
+										instanceIPNameCache.cache[ip] = *container.Name
+									}
 								}
 								instanceIPNameCache.Unlock()
 							}

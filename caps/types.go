@@ -88,11 +88,12 @@ type (
 	}
 
 	VPCFlowLogCap struct {
-		ec2Svc        *ec2.EC2
-		InstanceIds   string
-		cloudWatchSvc *cloudwatchlogs.CloudWatchLogs
-		Region        string
-		iCache        instancesFoundCacheHolder
+		ec2Svc           *ec2.EC2
+		InstanceIds      string
+		cloudWatchSvc    *cloudwatchlogs.CloudWatchLogs
+		Region           string
+		iCache           instancesFoundCacheHolder
+		ShowInternetNode bool
 	}
 )
 
