@@ -312,6 +312,9 @@ func (src *VPCFlowLogCap) fillInstanceCache() {
 
 			for _, res := range instances.Reservations {
 				for _, inst := range res.Instances {
+					if inst == nil || inst.PrivateIpAddress == nil {
+						continue
+					}
 					ip := *inst.PrivateIpAddress
 					nameTag := ""
 
