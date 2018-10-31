@@ -1,0 +1,47 @@
+<h1 id="networklogger">Network logger</h1>
+
+<p>Simple network traffic capture utility that relies on gopacket/libpcap and AWS Flow Logs to visualize network
+    traffic.</p>
+
+<h2 id="goal">Goal</h2>
+
+<p>Create <a href="https://github.com/Netflix/vizceral" title="Vizceral">Vizceral</a> network traffic visualizations using <a href="http://biot.com/capstats/bpf.html">BPF filters</a>
+    and <a href="https://docs.aws.amazon.com/AmazonVPC/latest/UserGuide/flow-logs.html">AWS VPC Flow Logs</a>. The tool build a JSON model
+    that is read by Vizceral to visualize traffic.</p>
+
+<h2 id="usage">Usage</h2>
+
+<p>The program's VPC FlowLogs exporter works only if the targeted instances' VPC have flow logs enabled and the logs are in CloudWatch Logs  </p>
+
+<p>Run: <code>go build</code> in the current directory, then run it using the parameter and environment variables configuration:</p>
+
+<ul>
+    <li><p>params: <code>./network-logger --fileowner=OWNER
+        --out=.....vizceral-example/dist/generated.json</code>. This will case the <code>generated.json</code> file
+        to be exported in the location specified by the parameter</p></li>
+
+    <li><p>environment variables:</p>
+
+        <p><ul>
+            <li>SOURCE: <code>vpc-flowlog</code> or <code>bpf-filter</code> - bpf-filter implementation is in progress</li></p>
+
+        <p><li>AWS_REGIONS: comma separated AWS region values to fetch VPC flow logs from</li></p>
+
+    <p><li>INSTANCE_IDS: comma separated EC2 instance IDs</li></p>
+
+    <p><li>AWS_REGION: sdk region</li></p>
+
+    <p><li>AWS_PROFILE: sdk profile </li></ul>
+
+<p></p></li>
+</ul></p>
+
+<p><img src="https://raw.githubusercontent.com/stefanszasz/network-logger/master/assets/vizceral-1.png" width="500" /></p>
+
+<h2 id="notes">Notes</h2>
+
+<ol>
+    <li>BPF exporter is in progress</li>
+
+    <li>No tests</li>
+</ol>

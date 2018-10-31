@@ -44,15 +44,15 @@ func main() {
 			trySavingOutput(n.String(), n.Title(), n.InstanceId)
 		}
 	} else if flowSource == "bpf-filter" {
-		handleTermination()
-		in := &caps.BPFCaptureInput{Device: devName, Filter: bpfFilter}
-		bpfCap := caps.MakeNewBPFCapture(in)
-
-		ch := make(chan caps.VizceralNode)
-		_, err := bpfCap.StartCapture(ch)
-		if err != nil {
-			log.Fatal(err)
-		}
+		//handleTermination()
+		//in := &caps.BPFCaptureInput{Device: devName, Filter: bpfFilter}
+		//bpfCap := caps.MakeNewBPFCapture(in)
+		//
+		//ch := make(chan caps.VizceralNode)
+		//_, err := bpfCap.StartCapture(ch)
+		//if err != nil {
+		//	log.Fatal(err)
+		//}
 	} else {
 		log.Fatal("SOURCE env var must be 'vpc-flowlog' or 'bpf-filter'")
 	}
